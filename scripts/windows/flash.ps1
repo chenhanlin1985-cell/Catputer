@@ -48,7 +48,7 @@ if (-not $Port) {
     throw "Could not auto-detect a USB serial port. Re-run with -Port COMx."
 }
 
-Write-Host "Flashing ClawPuter to $Port ..." -ForegroundColor Cyan
+Write-Host "Flashing Catputer to $Port ..." -ForegroundColor Cyan
 Push-Location $RepoRoot
 try {
     python -m platformio run -t upload --upload-port $Port

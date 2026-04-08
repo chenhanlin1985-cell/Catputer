@@ -1,8 +1,8 @@
-# 小橘猫口袋宠物
+# Catputer
 
 [English](README.md)
 
-这是一个运行在 `M5Stack Cardputer / Cardputer Adv` 上的口袋宠物项目。
+这是一个运行在 `M5Stack Cardputer / Cardputer Adv` 上的小橘猫口袋宠物项目。
 
 当前版本已经从早期的实验性聊天壳，整理成了更接近成品的小橘猫设备：
 

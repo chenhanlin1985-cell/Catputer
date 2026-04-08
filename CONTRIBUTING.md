@@ -1,6 +1,6 @@
-# Contributing to ClawPuter
+# Contributing to Catputer
 
-Thanks for your interest in improving ClawPuter.
+Thanks for your interest in improving Catputer.
 
 ## Development Setup
 

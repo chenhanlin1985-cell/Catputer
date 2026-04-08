@@ -1,8 +1,8 @@
-# Orange Cat Pocket Pet
+# Catputer
 
 [中文说明](README_CN.md)
 
-A pocket pet for `M5Stack Cardputer / Cardputer Adv`.
+An orange-cat pocket pet for `M5Stack Cardputer / Cardputer Adv`.
 
 This version focuses on a small orange cat that works well offline and gets smarter online.
 
