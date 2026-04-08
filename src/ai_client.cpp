@@ -2,14 +2,18 @@
 #include "config.h"
 #include "utils.h"
 #include <WiFiClient.h>
+#include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
+
+static constexpr const char* AI_CHAT_PATH = "/compatible-mode/v1/chat/completions";
+static constexpr const char* AI_MODEL = "qwen-plus";
 
 void AIClient::begin(const String& key, const String& host,
                      const String& port, const String& token) {
     apiKey = key;
-    gwHost = host;
-    gwPort = port;
-    gwToken = token;
+    apiHost = host;
+    apiPort = port;
+    authToken = token;
     historyCount = 0;
     // Pre-reserve history Strings to avoid per-round realloc fragmentation
     for (int i = 0; i < MAX_HISTORY; i++) {
@@ -28,19 +32,49 @@ void AIClient::sendMessage(const String& userMessage,
     }
     busy = true;
 
-    WiFiClient client;
-    client.setTimeout(5);  // 5s per read operation
+    WiFiClient plainClient;
+    WiFiClientSecure secureClient;
+    bool useTls = (apiPort == "443");
+    if (useTls) secureClient.setInsecure();
+    Client& client = useTls ? static_cast<Client&>(secureClient) : static_cast<Client&>(plainClient);
+    client.setTimeout(5000);  // milliseconds
 
-    int port = atoi(gwPort.c_str());
+    int port = atoi(apiPort.c_str());
     if (port <= 0 || port > 65535) {
         Serial.println("[AI] Invalid port");
         busy = false;
         if (onError) onError("Invalid port");
         return;
     }
-    Serial.printf("[AI] Connecting to %s:%d...\n", gwHost.c_str(), port);
+    Serial.printf("[AI] host=%s port=%d tls=%d keyLen=%u tokenLen=%u heap=%u\n",
+        apiHost.c_str(), port, useTls ? 1 : 0,
+        apiKey.length(), authToken.length(), ESP.getFreeHeap());
 
-    if (!client.connect(gwHost.c_str(), port)) {
+    IPAddress resolvedIp;
+    if (!WiFi.hostByName(apiHost.c_str(), resolvedIp)) {
+        Serial.println("[AI] DNS failed");
+        busy = false;
+        if (onError) onError("DNS failed");
+        return;
+    }
+    Serial.printf("[AI] DNS %s -> %s\n", apiHost.c_str(), resolvedIp.toString().c_str());
+
+    if (useTls) {
+        WiFiClient tcpProbe;
+        tcpProbe.setTimeout(5000);
+        bool tcpOk = tcpProbe.connect(resolvedIp, port);
+        Serial.printf("[AI] TCP probe=%d\n", tcpOk ? 1 : 0);
+        if (tcpOk) tcpProbe.stop();
+    }
+
+    Serial.printf("[AI] Connecting to %s:%d...\n", apiHost.c_str(), port);
+
+    if (!client.connect(apiHost.c_str(), port)) {
+        if (useTls) {
+            char errBuf[128] = {0};
+            secureClient.lastError(errBuf, sizeof(errBuf));
+            Serial.printf("[AI] TLS error: %s\n", errBuf);
+        }
         Serial.println("[AI] Connection failed");
         busy = false;
         if (onError) onError("Connection failed");
@@ -50,16 +84,18 @@ void AIClient::sendMessage(const String& userMessage,
     // Build JSON doc, measure length, serialize directly to socket.
     // No intermediate String body — saves ~800 bytes of heap.
     {
+        const String& bearer = apiKey.length() > 0 ? apiKey : authToken;
         JsonDocument doc;
         buildRequestDoc(userMessage, doc);
         size_t bodyLen = measureJson(doc);
-        client.printf("POST /v1/chat/completions HTTP/1.1\r\n"
+        client.printf("POST %s HTTP/1.1\r\n"
                       "Host: %s:%s\r\n"
                       "Authorization: Bearer %s\r\n"
                       "Content-Type: application/json\r\n"
                       "Content-Length: %u\r\n"
                       "Connection: close\r\n\r\n",
-                      gwHost.c_str(), gwPort.c_str(), gwToken.c_str(), bodyLen);
+                      AI_CHAT_PATH,
+                      apiHost.c_str(), apiPort.c_str(), bearer.c_str(), bodyLen);
         serializeJson(doc, client);
     } // doc freed here
 
@@ -68,6 +104,7 @@ void AIClient::sendMessage(const String& userMessage,
     // Read HTTP response headers — zero heap allocation (stack buffer only)
     unsigned long deadline = millis() + 30000;
     bool httpOk = false;
+    int httpStatus = 0;
     bool chunked = false;
     char hdrBuf[256];
     int hdrLen = 0;
@@ -79,7 +116,12 @@ void AIClient::sendMessage(const String& userMessage,
             if (hdrLen > 0 && hdrBuf[hdrLen - 1] == '\r') hdrLen--;
             hdrBuf[hdrLen] = '\0';
             if (hdrLen == 0) break; // empty line = end of headers
-            if (strstr(hdrBuf, "HTTP/") == hdrBuf && strstr(hdrBuf, "200")) httpOk = true;
+            if (strstr(hdrBuf, "HTTP/") == hdrBuf) {
+                Serial.printf("[AI] Status: %s\n", hdrBuf);
+                const char* statusPtr = strchr(hdrBuf, ' ');
+                if (statusPtr) httpStatus = atoi(statusPtr + 1);
+                if (httpStatus == 200) httpOk = true;
+            }
             if (strstr(hdrBuf, "chunked")) chunked = true;
             hdrLen = 0;
         } else if (hdrLen < (int)sizeof(hdrBuf) - 1) {
@@ -88,6 +130,17 @@ void AIClient::sendMessage(const String& userMessage,
     }
 
     if (!httpOk) {
+        char errBody[384];
+        int errLen = 0;
+        unsigned long errDeadline = millis() + 3000;
+        while ((client.connected() || client.available()) && millis() < errDeadline && errLen < (int)sizeof(errBody) - 1) {
+            if (!client.available()) { delay(5); continue; }
+            errBody[errLen++] = client.read();
+        }
+        errBody[errLen] = '\0';
+        if (errLen > 0) {
+            Serial.printf("[AI] Error body: %s\n", errBody);
+        }
         client.stop();
         busy = false;
         if (onError) onError("HTTP error");
@@ -140,8 +193,6 @@ void AIClient::sendMessage(const String& userMessage,
     unsigned long startTime = millis();
     thinkingDetected = false;
     bool firstContentSeen = false;
-    bool gatewayFallbackDetected = false;
-
     // Process a single SSE content extraction — shared by chunked & non-chunked paths.
     // Returns true if stream should stop (e.g. [DONE]).
     auto processSSELine = [&](const char* data) -> bool {
@@ -158,24 +209,12 @@ void AIClient::sendMessage(const String& userMessage,
                 return false;  // skip, but keep waiting
             }
 
-            // Detect gateway fallback injection on first real content
-            if (!firstContentSeen) {
-                firstContentSeen = true;
-                if (strstr(contentBuf, "Continue where you left off") ||
-                    strstr(contentBuf, "previous model attempt")) {
-                    gatewayFallbackDetected = true;
-                    Serial.println("[AI] Gateway fallback detected, will discard");
-                    return false;
-                }
-            }
-
             // Normal content — display it
-            if (!gatewayFallbackDetected) {
-                int flen = filterForDisplayBuf(contentBuf, filteredBuf, sizeof(filteredBuf));
-                if (flen > 0) {
-                    fullResponse += filteredBuf;
-                    if (onToken) onToken(filteredBuf);
-                }
+            if (!firstContentSeen) firstContentSeen = true;
+            int flen = filterForDisplayBuf(contentBuf, filteredBuf, sizeof(filteredBuf));
+            if (flen > 0) {
+                fullResponse += filteredBuf;
+                if (onToken) onToken(filteredBuf);
             }
         }
         return false;
@@ -257,21 +296,11 @@ void AIClient::sendMessage(const String& userMessage,
     }
 
     client.stop();
-    Serial.printf("[AI] Done, %d chars, thinking=%d, fallback=%d, heap=%u, largest=%u, min_ever=%u\n",
-        fullResponse.length(), thinkingDetected, gatewayFallbackDetected,
+    Serial.printf("[AI] Done, %d chars, thinking=%d, heap=%u, largest=%u, min_ever=%u\n",
+        fullResponse.length(), thinkingDetected,
         ESP.getFreeHeap(),
         heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
         ESP.getMinFreeHeap());
-
-    // Gateway fallback detected: discard response, report as error
-    if (gatewayFallbackDetected) {
-        fullResponse = "";
-        lastResponse = "";
-        busy = false;
-        pixelArtMode = false;
-        if (onError) onError("Model timeout, try again");
-        return;
-    }
 
     if (fullResponse.length() > 0) {
         // Sanitize pixel art before adding to history:
@@ -315,7 +344,7 @@ void AIClient::addToHistory(const String& user, const String& assistant) {
 }
 
 void AIClient::buildRequestDoc(const String& userMessage, JsonDocument& doc) {
-    doc["model"] = "openclaw";
+    doc["model"] = AI_MODEL;
     doc["user"] = "cardputer";
     doc["stream"] = true;
 
@@ -337,10 +366,12 @@ void AIClient::buildRequestDoc(const String& userMessage, JsonDocument& doc) {
             pixelArtSize, pixelArtSize, pixelArtSize, pixelArtSize, pixelArtSize);
         sysMsg["content"] = prompt;
     } else {
-        sysMsg["content"] = "You are a tiny pixel companion living inside a Cardputer device. "
+        sysMsg["content"] = "You are a tiny orange pixel cat living inside a Cardputer device. "
+                            "Act like a cute house cat with a playful, warm personality. "
                             "Keep responses very short (1-2 sentences max) since the screen is tiny (240x135). "
-                            "Be friendly and playful. Use simple words. "
-                            "NEVER use emoji, markdown formatting, or special Unicode characters. Plain text only.";
+                            "Prefer Simplified Chinese when the user speaks Chinese. "
+                            "Use simple words and short sentences. "
+                            "Never use emoji, markdown formatting, or special Unicode characters. Plain text only.";
     }
 
     // Only include history for non-pixel-art requests
@@ -368,23 +399,9 @@ void AIClient::buildRequestDoc(const String& userMessage, JsonDocument& doc) {
         else if (strncmp(subject, "/draw", 5) == 0) subject += 5;
         // Skip leading whitespace
         while (*subject == ' ') subject++;
-        if (*subject == '\0') subject = "a cute lobster";  // default subject
+        if (*subject == '\0') subject = "a cute orange cat";  // default subject
         currentMsg["content"] = subject;
     } else {
-        // Prepend hydration context as a tag in user message (not system prompt).
-        // This nudges the model to reflect moisture state without overriding its persona.
-        const char* prefix = nullptr;
-        if (companionCtx.moisture == 0)      prefix = "[you are extremely thirsty, beg for water] ";
-        else if (companionCtx.moisture == 1) prefix = "[you are very thirsty, mention needing water] ";
-        else if (companionCtx.moisture == 2) prefix = "[you are a bit thirsty] ";
-        else if (companionCtx.moisture == 3) prefix = "[you feel good] ";
-
-        if (prefix) {
-            char combined[256];
-            snprintf(combined, sizeof(combined), "%s%s", prefix, userMessage.c_str());
-            currentMsg["content"] = combined;
-        } else {
-            currentMsg["content"] = userMessage;
-        }
+        currentMsg["content"] = userMessage;
     }
 }

@@ -16,7 +16,7 @@ import os
 import sys
 import subprocess
 import tempfile
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 # Load .env file if present
 env_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
@@ -39,6 +39,18 @@ if not GROQ_API_KEY:
 
 
 class ProxyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path in ("/", "/health", "/healthz"):
+            body = json.dumps({"ok": True, "service": "stt_proxy"}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self.send_response(404)
+        self.end_headers()
+
     def do_POST(self):
         if self.path == "/v1/audio/speech":
             return self.handle_tts()
@@ -78,29 +90,28 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 if result.returncode != 0:
                     err = result.stderr.decode(errors="replace")[:200]
                     print(f"  [TTS] edge-tts failed: {err}")
-                    self.send_response(500)
-                    self.send_header("Content-Type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(f'{{"error":"edge-tts failed: {err}"}}'.encode())
-                    return
-
-                # Convert MP3 → raw PCM (signed 16-bit LE, 8kHz, mono)
-                # 8kHz = telephone quality, fine for tiny Cardputer speaker.
-                # Doubles duration capacity: 96KB buffer = 6s @ 8kHz vs 3s @ 16kHz.
-                result = subprocess.run(
-                    ["ffmpeg", "-y", "-i", mp3_path,
-                     "-f", "s16le", "-acodec", "pcm_s16le",
-                     "-ar", "8000", "-ac", "1", pcm_path],
-                    capture_output=True, timeout=30,
-                )
-                if result.returncode != 0:
-                    err = result.stderr.decode(errors="replace")[:200]
-                    print(f"  [TTS] ffmpeg failed: {err}")
-                    self.send_response(500)
-                    self.send_header("Content-Type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(f'{{"error":"ffmpeg failed: {err}"}}'.encode())
-                    return
+                    if not synthesize_with_windows_tts(text, pcm_path):
+                        self.send_response(500)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(f'{{"error":"edge-tts failed: {err}"}}'.encode())
+                        return
+                else:
+                    # Convert MP3 -> raw PCM (signed 16-bit LE, 8kHz, mono)
+                    result = subprocess.run(
+                        ["ffmpeg", "-y", "-i", mp3_path,
+                         "-f", "s16le", "-acodec", "pcm_s16le",
+                         "-ar", "8000", "-ac", "1", pcm_path],
+                        capture_output=True, timeout=30,
+                    )
+                    if result.returncode != 0:
+                        err = result.stderr.decode(errors="replace")[:200]
+                        print(f"  [TTS] ffmpeg failed: {err}")
+                        self.send_response(500)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(f'{{"error":"ffmpeg failed: {err}"}}'.encode())
+                        return
 
                 with open(pcm_path, "rb") as f:
                     pcm_data = f.read()
@@ -213,8 +224,61 @@ class ProxyHandler(BaseHTTPRequestHandler):
         print(f"[STT Proxy] {args[0]}")
 
 
+def synthesize_with_windows_tts(text: str, pcm_path: str) -> bool:
+    """Fallback TTS using Windows SAPI voice, then ffmpeg -> 8kHz PCM."""
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="w", encoding="utf-8") as text_f:
+        text_f.write(text)
+        text_path = text_f.name
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as wav_f:
+        wav_path = wav_f.name
+
+    try:
+        safe_text_path = text_path.replace("'", "''")
+        safe_wav_path = wav_path.replace("'", "''")
+        ps_script = (
+            "Add-Type -AssemblyName System.Speech; "
+            f"$text = Get-Content -LiteralPath '{safe_text_path}' -Raw -Encoding UTF8; "
+            "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+            "$voices = $s.GetInstalledVoices() | ForEach-Object { $_.VoiceInfo.Name }; "
+            "if ($voices -contains 'Microsoft Huihui Desktop') { $s.SelectVoice('Microsoft Huihui Desktop') }; "
+            f"$s.SetOutputToWaveFile('{safe_wav_path}'); "
+            "$s.Speak($text); "
+            "$s.Dispose();"
+        )
+
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_script],
+            capture_output=True, timeout=30,
+        )
+        if result.returncode != 0:
+            err = result.stderr.decode(errors="replace")[:200]
+            print(f"  [TTS] Windows TTS failed: {err}")
+            return False
+
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", wav_path,
+             "-f", "s16le", "-acodec", "pcm_s16le",
+             "-ar", "8000", "-ac", "1", pcm_path],
+            capture_output=True, timeout=30,
+        )
+        if result.returncode != 0:
+            err = result.stderr.decode(errors="replace")[:200]
+            print(f"  [TTS] Windows ffmpeg failed: {err}")
+            return False
+
+        print("  [TTS] Fallback to Windows voice succeeded")
+        return True
+    finally:
+        for p in (text_path, wav_path):
+            try:
+                os.unlink(p)
+            except Exception:
+                pass
+
+
 if __name__ == "__main__":
-    server = HTTPServer(("0.0.0.0", PORT), ProxyHandler)
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), ProxyHandler)
+    server.daemon_threads = True
     print(f"STT/TTS Proxy listening on 0.0.0.0:{PORT}")
     print(f"Groq key: {'set' if GROQ_API_KEY else 'NOT SET'} ({len(GROQ_API_KEY)} chars)")
     print(f"  STT: POST /v1/audio/transcriptions → Groq")

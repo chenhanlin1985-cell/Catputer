@@ -14,6 +14,16 @@ static String ssid2;
 static String password2;
 static String gatewayHost2;
 static String city;
+static uint8_t speakerVolume = 255;
+static bool autoSpeak = true;
+static uint8_t petFullness = 75;
+static uint8_t petMood = 70;
+static uint8_t petEnergy = 80;
+static uint8_t petCleanliness = 78;
+static uint8_t petBond = 35;
+static String souvenirSlots[3];
+static String souvenirNoteSlots[3];
+static uint8_t souvenirCount = 0;
 
 bool Config::load() {
     prefs.begin("companion", true); // read-only
@@ -29,6 +39,20 @@ bool Config::load() {
     password2 = prefs.getString("pass2", "");
     gatewayHost2 = prefs.getString("gw_host2", "");
     city = prefs.getString("city", "");
+    speakerVolume = prefs.getUChar("spk_vol", 255);
+    autoSpeak = prefs.getBool("auto_tts", true);
+    petFullness = prefs.getUChar("pet_full", 75);
+    petMood = prefs.getUChar("pet_mood", 70);
+    petEnergy = prefs.getUChar("pet_energy", 80);
+    petCleanliness = prefs.getUChar("pet_clean", 78);
+    petBond = prefs.getUChar("pet_bond", 35);
+    souvenirSlots[0] = prefs.getString("sv_0", "");
+    souvenirSlots[1] = prefs.getString("sv_1", "");
+    souvenirSlots[2] = prefs.getString("sv_2", "");
+    souvenirNoteSlots[0] = prefs.getString("svn_0", "");
+    souvenirNoteSlots[1] = prefs.getString("svn_1", "");
+    souvenirNoteSlots[2] = prefs.getString("svn_2", "");
+    souvenirCount = prefs.getUChar("sv_count", 0);
     prefs.end();
     return ssid.length() > 0;
 }
@@ -47,6 +71,20 @@ void Config::save() {
     prefs.putString("pass2", password2);
     prefs.putString("gw_host2", gatewayHost2);
     prefs.putString("city", city);
+    prefs.putUChar("spk_vol", speakerVolume);
+    prefs.putBool("auto_tts", autoSpeak);
+    prefs.putUChar("pet_full", petFullness);
+    prefs.putUChar("pet_mood", petMood);
+    prefs.putUChar("pet_energy", petEnergy);
+    prefs.putUChar("pet_clean", petCleanliness);
+    prefs.putUChar("pet_bond", petBond);
+    prefs.putString("sv_0", souvenirSlots[0]);
+    prefs.putString("sv_1", souvenirSlots[1]);
+    prefs.putString("sv_2", souvenirSlots[2]);
+    prefs.putString("svn_0", souvenirNoteSlots[0]);
+    prefs.putString("svn_1", souvenirNoteSlots[1]);
+    prefs.putString("svn_2", souvenirNoteSlots[2]);
+    prefs.putUChar("sv_count", souvenirCount);
     prefs.end();
 }
 
@@ -66,6 +104,20 @@ void Config::reset() {
     password2 = "";
     gatewayHost2 = "";
     city = "";
+    speakerVolume = 255;
+    autoSpeak = true;
+    petFullness = 75;
+    petMood = 70;
+    petEnergy = 80;
+    petCleanliness = 78;
+    petBond = 35;
+    souvenirSlots[0] = "";
+    souvenirSlots[1] = "";
+    souvenirSlots[2] = "";
+    souvenirNoteSlots[0] = "";
+    souvenirNoteSlots[1] = "";
+    souvenirNoteSlots[2] = "";
+    souvenirCount = 0;
 }
 
 const String& Config::getSSID() { return ssid; }
@@ -80,6 +132,24 @@ const String& Config::getSSID2() { return ssid2; }
 const String& Config::getPassword2() { return password2; }
 const String& Config::getGatewayHost2() { return gatewayHost2; }
 const String& Config::getCity() { return city; }
+uint8_t Config::getSpeakerVolume() { return speakerVolume; }
+bool Config::getAutoSpeak() { return autoSpeak; }
+uint8_t Config::getPetFullness() { return petFullness; }
+uint8_t Config::getPetMood() { return petMood; }
+uint8_t Config::getPetEnergy() { return petEnergy; }
+uint8_t Config::getPetCleanliness() { return petCleanliness; }
+uint8_t Config::getPetBond() { return petBond; }
+const String& Config::getSouvenirSlot(uint8_t index) {
+    static String empty = "";
+    if (index >= 3) return empty;
+    return souvenirSlots[index];
+}
+const String& Config::getSouvenirNoteSlot(uint8_t index) {
+    static String empty = "";
+    if (index >= 3) return empty;
+    return souvenirNoteSlots[index];
+}
+uint8_t Config::getSouvenirCount() { return souvenirCount; }
 
 void Config::setSSID(const String& s) { ssid = s; }
 void Config::setPassword(const String& p) { password = p; }
@@ -93,5 +163,21 @@ void Config::setSSID2(const String& s) { ssid2 = s; }
 void Config::setPassword2(const String& p) { password2 = p; }
 void Config::setGatewayHost2(const String& h) { gatewayHost2 = h; }
 void Config::setCity(const String& c) { city = c; }
+void Config::setSpeakerVolume(uint8_t v) { speakerVolume = v; }
+void Config::setAutoSpeak(bool enabled) { autoSpeak = enabled; }
+void Config::setPetFullness(uint8_t v) { petFullness = v; }
+void Config::setPetMood(uint8_t v) { petMood = v; }
+void Config::setPetEnergy(uint8_t v) { petEnergy = v; }
+void Config::setPetCleanliness(uint8_t v) { petCleanliness = v; }
+void Config::setPetBond(uint8_t v) { petBond = v; }
+void Config::setSouvenirSlot(uint8_t index, const String& value) {
+    if (index >= 3) return;
+    souvenirSlots[index] = value;
+}
+void Config::setSouvenirNoteSlot(uint8_t index, const String& value) {
+    if (index >= 3) return;
+    souvenirNoteSlots[index] = value;
+}
+void Config::setSouvenirCount(uint8_t count) { souvenirCount = count > 3 ? 3 : count; }
 
 bool Config::isValid() { return ssid.length() > 0; }

@@ -5,6 +5,8 @@
 class VoiceInput {
 public:
     void begin(const String& sttHost, const String& sttPort);
+    bool ensureReady();
+    void releaseIfIdle();
 
     // Push-to-talk: call when Fn pressed/released
     void startRecording();

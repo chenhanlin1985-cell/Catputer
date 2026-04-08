@@ -6,6 +6,7 @@ class TTSPlayback {
 public:
     void begin(const String& host, const String& port,
                int16_t* sharedBuffer, size_t maxSamples);
+    void setBuffer(int16_t* sharedBuffer, size_t maxSamples);
 
     // Download PCM from proxy and start playback. Blocks during download,
     // playback is non-blocking (DMA queue via Speaker.playRaw).

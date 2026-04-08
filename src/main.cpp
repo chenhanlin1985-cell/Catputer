@@ -1,4 +1,4 @@
-#include <M5Cardputer.h>
+﻿#include <M5Cardputer.h>
 #include <WiFi.h>
 #include <time.h>
 #include "utils.h"
@@ -11,6 +11,8 @@
 #include "voice_input.h"
 #include "tts_playback.h"
 #include "weather_client.h"
+#include "pet_storage.h"
+#include "serial_sd_sync.h"
 
 // ── Build-time defaults (may be empty if not set in .env) ──
 #ifndef WIFI_SSID
@@ -18,9 +20,6 @@
 #endif
 #ifndef WIFI_PASS
 #define WIFI_PASS ""
-#endif
-#ifndef CLAUDE_API_KEY
-#define CLAUDE_API_KEY ""
 #endif
 #ifndef OPENCLAW_HOST
 #define OPENCLAW_HOST ""
@@ -30,6 +29,15 @@
 #endif
 #ifndef OPENCLAW_TOKEN
 #define OPENCLAW_TOKEN ""
+#endif
+#ifndef API_HOST
+#define API_HOST OPENCLAW_HOST
+#endif
+#ifndef API_PORT
+#define API_PORT OPENCLAW_PORT
+#endif
+#ifndef API_KEY
+#define API_KEY OPENCLAW_TOKEN
 #endif
 #ifndef STT_PROXY_HOST
 #define STT_PROXY_HOST ""
@@ -46,6 +54,9 @@
 #ifndef OPENCLAW_HOST2
 #define OPENCLAW_HOST2 ""
 #endif
+#ifndef API_HOST2
+#define API_HOST2 OPENCLAW_HOST2
+#endif
 #ifndef DEFAULT_CITY
 #define DEFAULT_CITY "Beijing"
 #endif
@@ -59,13 +70,14 @@ VoiceInput voiceInput;
 TTSPlayback ttsPlayback;
 WeatherClient weatherClient;
 CmdServer cmdServer;
+SerialSDSync serialSDSync;
 
 enum class AppMode { SETUP, COMPANION, CHAT };
 static AppMode appMode = AppMode::SETUP;
 static bool offlineMode = false;
 
 // ── Setup mode state ──
-enum class SetupStep { SSID, PASSWORD, GATEWAY_HOST, GATEWAY_PORT, GATEWAY_TOKEN, STT_HOST, CONNECTING };
+enum class SetupStep { SSID, PASSWORD, API_KEY_STEP, CONNECTING };
 static SetupStep setupStep = SetupStep::SSID;
 static String setupInput;
 
@@ -84,12 +96,14 @@ void connectWiFi();
 void initOnlineServices(bool usedSecondary);
 void enterCompanionMode();
 void enterChatMode();
+void applySpeakerVolume();
+void changeSpeakerVolume(int delta);
+void toggleAutoSpeak();
 
 // ══════════════════════════════════════════════════════════════
 void setup() {
     auto cfg = M5.config();
     M5Cardputer.begin(cfg, true);
-    M5Cardputer.Speaker.setVolume(255);
     Serial.begin(115200);
     delay(500);
     Serial.println("[BOOT] Starting...");
@@ -100,10 +114,15 @@ void setup() {
     canvas.createSprite(SCREEN_W, SCREEN_H);
     canvas.setTextWrap(false);
 
+    // Optional SD card storage for souvenirs and event logs.
+    PetStorage::begin();
+    serialSDSync.begin();
+
     // Load NVS, then fill empty fields with build-time defaults
     Config::load();
     fillBuildTimeDefaults();
     Config::save();
+    applySpeakerVolume();
 
     // Play boot animation
     playBootAnimation(canvas);
@@ -122,30 +141,70 @@ void fillBuildTimeDefaults() {
         Config::setSSID(WIFI_SSID);
     if (Config::getPassword().length() == 0 && strlen(WIFI_PASS) > 0)
         Config::setPassword(WIFI_PASS);
-    if (Config::getApiKey().length() == 0 && strlen(CLAUDE_API_KEY) > 0)
-        Config::setApiKey(CLAUDE_API_KEY);
-    if (Config::getGatewayHost().length() == 0 && strlen(OPENCLAW_HOST) > 0)
-        Config::setGatewayHost(OPENCLAW_HOST);
-    if (Config::getGatewayPort().length() == 0 && strlen(OPENCLAW_PORT) > 0)
-        Config::setGatewayPort(OPENCLAW_PORT);
-    if (Config::getGatewayToken().length() == 0 && strlen(OPENCLAW_TOKEN) > 0)
-        Config::setGatewayToken(OPENCLAW_TOKEN);
-    if (Config::getSttHost().length() == 0 && strlen(STT_PROXY_HOST) > 0)
+    if (Config::getApiKey().length() == 0 && strlen(API_KEY) > 0)
+        Config::setApiKey(API_KEY);
+    // Host/port are now product defaults, not user-facing runtime settings.
+    // Always refresh them from build-time values so stale OpenClaw settings
+    // cannot keep the device pointed at an old local gateway.
+    if (strlen(API_HOST) > 0)
+        Config::setGatewayHost(API_HOST);
+    if (strlen(API_PORT) > 0)
+        Config::setGatewayPort(API_PORT);
+    if (strlen(API_KEY) > 0)
+        Config::setGatewayToken(API_KEY);
+    // STT proxy is also a product default. Always refresh it from the
+    // build-time value so stale saved settings cannot point voice input at
+    // an old machine or dead local proxy.
+    if (strlen(STT_PROXY_HOST) > 0)
         Config::setSttHost(STT_PROXY_HOST);
-    if (Config::getSttPort().length() == 0 && strlen(STT_PROXY_PORT) > 0)
+    if (strlen(STT_PROXY_PORT) > 0)
         Config::setSttPort(STT_PROXY_PORT);
     if (Config::getSSID2().length() == 0 && strlen(WIFI_SSID2) > 0)
         Config::setSSID2(WIFI_SSID2);
     if (Config::getPassword2().length() == 0 && strlen(WIFI_PASS2) > 0)
         Config::setPassword2(WIFI_PASS2);
-    if (Config::getGatewayHost2().length() == 0 && strlen(OPENCLAW_HOST2) > 0)
-        Config::setGatewayHost2(OPENCLAW_HOST2);
-    if (Config::getCity().length() == 0) {
-        if (strlen(DEFAULT_CITY) > 0)
+    if (strlen(API_HOST2) > 0)
+        Config::setGatewayHost2(API_HOST2);
+    if (strlen(DEFAULT_CITY) > 0) {
+        // Migrate the original default city while preserving user-customized values.
+        if (Config::getCity().length() == 0 || Config::getCity() == "Beijing")
             Config::setCity(DEFAULT_CITY);
-        else
-            Config::setCity("Beijing"); // fallback when env var not set
+    } else if (Config::getCity().length() == 0) {
+        Config::setCity("Beijing"); // fallback when env var not set
     }
+}
+
+void applySpeakerVolume() {
+    uint8_t volume = Config::getSpeakerVolume();
+    M5Cardputer.Speaker.setVolume(volume);
+    Serial.printf("[AUDIO] Speaker volume=%u\n", volume);
+}
+
+void changeSpeakerVolume(int delta) {
+    int oldVolume = Config::getSpeakerVolume();
+    int newVolume = oldVolume + delta;
+    if (newVolume < 0) newVolume = 0;
+    if (newVolume > 255) newVolume = 255;
+    if (newVolume == oldVolume) return;
+
+    Config::setSpeakerVolume((uint8_t)newVolume);
+    Config::save();
+    applySpeakerVolume();
+
+    char body[32];
+    int percent = (newVolume * 100 + 127) / 255;
+    snprintf(body, sizeof(body), "%d%% (%d/255)", percent, newVolume);
+    companion.showNotification("音量", "音量已调整", body);
+}
+
+void toggleAutoSpeak() {
+    bool enabled = !Config::getAutoSpeak();
+    Config::setAutoSpeak(enabled);
+    Config::save();
+    companion.showNotification(
+        u8"\u8bed\u97f3",
+        u8"\u81ea\u52a8\u6717\u8bfb",
+        enabled ? u8"\u5df2\u5f00\u542f" : u8"\u5df2\u5173\u95ed");
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -177,6 +236,10 @@ void loop() {
             auto ks = M5Cardputer.Keyboard.keysState();
 
             if (keyPressed) {
+                if (ks.ctrl && ks.enter) {
+                    toggleAutoSpeak();
+                    break;
+                }
                 if (ks.tab) {
                     playTransition(canvas, true);
                     enterChatMode();
@@ -187,18 +250,23 @@ void loop() {
                     companion.toggleWeatherSim();
                     break;
                 }
-                // Fn+0 = debug: set moisture to 0
-                if (ks.fn && ks.word.size() > 0 && ks.word[0] == '0') {
-                    companion.debugSetMoisture(0);
-                    break;
-                }
                 // Fn+R = reset config
                 if (ks.fn && ks.word.size() > 0 && ks.word[0] == 'r') {
                     WiFi.disconnect(true);
                     Config::reset();
                     fillBuildTimeDefaults();
                     Config::save();
+                    applySpeakerVolume();
                     enterSetupMode();
+                    break;
+                }
+                // Fn+, / Fn+. = volume down / up
+                if (ks.fn && ks.word.size() > 0 && ks.word[0] == ',') {
+                    changeSpeakerVolume(-32);
+                    break;
+                }
+                if (ks.fn && ks.word.size() > 0 && ks.word[0] == '.') {
+                    changeSpeakerVolume(32);
                     break;
                 }
                 // Digit keys 1-8 in weather sim mode
@@ -209,9 +277,42 @@ void loop() {
                         break;
                     }
                 }
-                // H key: spray water
+                // Offline pet actions
+                if (ks.word.size() > 0 && ks.word[0] == 'f') {
+                    companion.feed();
+                    break;
+                }
+                if (ks.word.size() > 0 && ks.word[0] == 'p') {
+                    companion.play();
+                    break;
+                }
+                if (ks.word.size() > 0 && ks.word[0] == 'n') {
+                    companion.nap();
+                    break;
+                }
+                if (ks.word.size() > 0 && ks.word[0] == 'c') {
+                    companion.cleanUp();
+                    break;
+                }
+                if (ks.word.size() > 0 && ks.word[0] == 'g') {
+                    companion.startToyGame();
+                    break;
+                }
                 if (ks.word.size() > 0 && ks.word[0] == 'h') {
-                    companion.spray();
+                    companion.showActionHelp();
+                    break;
+                }
+                if (ks.word.size() > 0 && ks.word[0] == 'i') {
+                    companion.toggleStatsPanel();
+                    break;
+                }
+                if (ks.word.size() > 0 && ks.word[0] == 'o') {
+                    companion.startOuting();
+                    break;
+                }
+                if (ks.word.size() > 0 && ks.word[0] == 'v') {
+                    companion.showSouvenirs();
+                    break;
                 }
                 // Non-movement keys → companion handles (space/enter for happy, etc.)
                 char key = 0;
@@ -264,7 +365,12 @@ void loop() {
             if (!offlineMode && fnDown && fnAlone && !voiceInput.isRecording()
                 && !aiClient.isBusy() && !voiceInput.isTranscribing()
                 && !ttsPlayback.isPlaying()) {
-                voiceInput.startRecording();
+                if (voiceInput.ensureReady()) {
+                    ttsPlayback.setBuffer(voiceInput.getBuffer(), voiceInput.getMaxSamples());
+                    voiceInput.startRecording();
+                } else {
+                    Serial.println("[VOICE] Startup alloc failed before recording");
+                }
             }
             if (fnUp && voiceInput.isRecording()) {
                 chat.update(canvas);
@@ -309,7 +415,9 @@ void loop() {
 
             // ── Normal keyboard input ──
             if (!voiceInput.isRecording()) {
-                if (tabDown) {
+                if (ks.ctrl && ks.enter) {
+                    toggleAutoSpeak();
+                } else if (tabDown) {
                     playTransition(canvas, false);
                     enterCompanionMode();
                     break;
@@ -324,13 +432,12 @@ void loop() {
                         chat.scrollUp();
                     } else if (ks.fn && key == '/') {
                         chat.scrollDown();
+                    } else if (ks.fn && key == ',') {
+                        changeSpeakerVolume(-32);
+                    } else if (ks.fn && key == '.') {
+                        changeSpeakerVolume(32);
                     } else if (!ks.fn) {
-                        // H key: spray when thirsty, type normally otherwise
-                        if (key == 'h' && companion.getMoistureLevel() <= 1) {
-                            companion.spray();
-                        } else {
-                            chat.handleKey(key);
-                        }
+                        chat.handleKey(key);
                     }
                 }
             }
@@ -340,11 +447,17 @@ void loop() {
                 if (offlineMode) {
                     // Offline: show error message instead of attempting AI request
                     String msg = chat.takePendingMessage();
-                    chat.appendAIToken("[Offline] No network connection");
+                    chat.appendAIToken(u8"[??] ????????");
                     chat.onAIResponseComplete();
                 } else {
                     String msg = chat.takePendingMessage();
                     Serial.printf("[CHAT] Sending: %s\n", msg.c_str());
+                    if (ttsPlayback.isPlaying()) {
+                        ttsPlayback.stop();
+                        delay(60);
+                    }
+                    voiceInput.releaseIfIdle();
+                    ttsPlayback.setBuffer(nullptr, 0);
                     companion.triggerTalk();
 
                     // Broadcast user message to desktop
@@ -357,7 +470,7 @@ void loop() {
 
                     // Update AI with companion state
                     AIClient::CompanionContext ctx;
-                    ctx.moisture = companion.getMoistureLevel();
+                    ctx.moisture = 3;
                     ctx.weatherType = static_cast<int>(companion.getWeatherType());
                     ctx.temperature = companion.getTemperature();
                     ctx.humidity = companion.getHumidityPercent();
@@ -412,14 +525,19 @@ void loop() {
                     }
 
                     // TTS: speak the AI response (skip for pixel art)
-                    if (!aiError && !hasPixelArt && aiClient.getLastResponse().length() > 0) {
-                        // Show "Speaking..." indicator while downloading PCM
-                        chat.update(canvas);
-                        ttsPlayback.drawSpeakingBar(canvas);
-                        canvas.pushSprite(0, 0);
+                    if (Config::getAutoSpeak() && !aiError && !hasPixelArt && aiClient.getLastResponse().length() > 0) {
+                        if (voiceInput.ensureReady()) {
+                            ttsPlayback.setBuffer(voiceInput.getBuffer(), voiceInput.getMaxSamples());
+                            // Show "Speaking..." indicator while downloading PCM
+                            chat.update(canvas);
+                            ttsPlayback.drawSpeakingBar(canvas);
+                            canvas.pushSprite(0, 0);
 
-                        ttsPlayback.requestAndPlay(aiClient.getLastResponse().c_str());
-                        // playRaw is non-blocking (DMA queue), returns immediately
+                            ttsPlayback.requestAndPlay(aiClient.getLastResponse().c_str());
+                            // playRaw is non-blocking (DMA queue), returns immediately
+                        } else {
+                            Serial.println("[TTS] Skipped, no shared audio buffer");
+                        }
                     }
                     companion.triggerIdle();
 
@@ -442,7 +560,6 @@ void loop() {
             }
 
             // ── Sync state + Draw ──
-            chat.setMoistureLevel(companion.getMoistureLevel());
             chat.setAIThinking(aiClient.thinkingDetected);
             chat.update(canvas);
             // Override input bar if recording, transcribing, or speaking
@@ -462,6 +579,9 @@ void loop() {
         cmdServer.tick();
     }
 
+    // Process USB serial SD sync commands.
+    serialSDSync.tick();
+
     // Broadcast state over UDP for desktop sync (skip if offline or not yet initialized)
     if (!offlineMode && appMode != AppMode::SETUP) {
         const char* modeStr = "COMPANION";
@@ -472,7 +592,7 @@ void loop() {
                            companion.getFrameIndex(), modeStr,
                            companion.getNormX(), companion.getNormY(),
                            companion.isFacingLeft() ? 1 : 0, wType, temp,
-                           companion.getMoistureLevel(), companion.getHumidityPercent());
+                           3, companion.getHumidityPercent());
     }
 
     delay(16); // ~60fps cap
@@ -491,9 +611,9 @@ void enterSetupMode() {
 // Helper: get display hint for current value (for setup screen)
 static void getDefaultHint(char* buf, int bufSize, const String& value, bool isPassword) {
     if (value.length() == 0) {
-        snprintf(buf, bufSize, "(empty)");
+        snprintf(buf, bufSize, u8"(\u7a7a)");
     } else if (isPassword) {
-        snprintf(buf, bufSize, "[%d chars set]", value.length());
+        snprintf(buf, bufSize, u8"[\u5df2\u8bbe%d\u4f4d]", value.length());
     } else {
         snprintf(buf, bufSize, "[%s]", value.c_str());
     }
@@ -501,28 +621,27 @@ static void getDefaultHint(char* buf, int bufSize, const String& value, bool isP
 
 void updateSetupMode() {
     canvas.fillScreen(Color::BG_DAY);
+    canvas.setFont(&fonts::efontCN_12);
     canvas.setTextColor(Color::CLOCK_TEXT);
     canvas.setTextSize(1);
-
-    canvas.drawString("=== Setup ===", 70, 4);
-
+    canvas.drawString(u8"=== \u8bbe\u7f6e ===", 70, 4);
+    canvas.setTextColor(Color::STATUS_DIM);
+    canvas.drawString(u8"\u9ed8\u8ba4\u9879\u5df2\u5185\u7f6e, \u8fd9\u91cc\u53ea\u6539\u5fc5\u8981\u5185\u5bb9", 16, 14);
     char hint[64];
-
     switch (setupStep) {
         case SetupStep::SSID:
-            canvas.drawString("WiFi SSID:", 10, 25);
+            canvas.drawString(u8"WiFi \u540d\u79f0:", 10, 25);
             getDefaultHint(hint, sizeof(hint), Config::getSSID(), false);
             canvas.setTextColor(Color::STATUS_DIM);
             canvas.drawString(hint, 80, 25);
             canvas.setTextColor(Color::WHITE);
             canvas.drawString((setupInput + "_").c_str(), 10, 42);
             canvas.setTextColor(Color::STATUS_DIM);
-            canvas.drawString("[Enter] keep/confirm", 10, 62);
-            canvas.drawString("[Tab] cancel", 170, 62);
+            canvas.drawString(u8"[Enter] \u4fdd\u7559/\u786e\u8ba4", 10, 62);
+            canvas.drawString(u8"[Tab] \u53d6\u6d88", 170, 62);
             break;
-
         case SetupStep::PASSWORD:
-            canvas.drawString("WiFi Password:", 10, 25);
+            canvas.drawString(u8"WiFi \u5bc6\u7801:", 10, 25);
             getDefaultHint(hint, sizeof(hint), Config::getPassword(), true);
             canvas.setTextColor(Color::STATUS_DIM);
             canvas.drawString(hint, 100, 25);
@@ -537,37 +656,12 @@ void updateSetupMode() {
                 canvas.drawString(masked, 10, 42);
             }
             canvas.setTextColor(Color::STATUS_DIM);
-            canvas.drawString("[Enter] keep/confirm", 10, 62);
-            canvas.drawString("[Tab] cancel", 170, 62);
+            canvas.drawString(u8"[Enter] \u4fdd\u7559/\u786e\u8ba4", 10, 62);
+            canvas.drawString(u8"[Tab] \u53d6\u6d88", 170, 62);
             break;
-
-        case SetupStep::GATEWAY_HOST:
-            canvas.drawString("Gateway Host:", 10, 25);
-            getDefaultHint(hint, sizeof(hint), Config::getGatewayHost(), false);
-            canvas.setTextColor(Color::STATUS_DIM);
-            canvas.drawString(hint, 100, 25);
-            canvas.setTextColor(Color::WHITE);
-            canvas.drawString((setupInput + "_").c_str(), 10, 42);
-            canvas.setTextColor(Color::STATUS_DIM);
-            canvas.drawString("[Enter] keep/confirm", 10, 62);
-            canvas.drawString("[Tab] cancel", 170, 62);
-            break;
-
-        case SetupStep::GATEWAY_PORT:
-            canvas.drawString("Gateway Port:", 10, 25);
-            getDefaultHint(hint, sizeof(hint), Config::getGatewayPort(), false);
-            canvas.setTextColor(Color::STATUS_DIM);
-            canvas.drawString(hint, 100, 25);
-            canvas.setTextColor(Color::WHITE);
-            canvas.drawString((setupInput + "_").c_str(), 10, 42);
-            canvas.setTextColor(Color::STATUS_DIM);
-            canvas.drawString("[Enter] keep/confirm", 10, 62);
-            canvas.drawString("[Tab] cancel", 170, 62);
-            break;
-
-        case SetupStep::GATEWAY_TOKEN:
-            canvas.drawString("Gateway Token:", 10, 25);
-            getDefaultHint(hint, sizeof(hint), Config::getGatewayToken(), true);
+        case SetupStep::API_KEY_STEP:
+            canvas.drawString(u8"API \u5bc6\u94a5:", 10, 25);
+            getDefaultHint(hint, sizeof(hint), Config::getApiKey(), true);
             canvas.setTextColor(Color::STATUS_DIM);
             canvas.drawString(hint, 105, 25);
             canvas.setTextColor(Color::WHITE);
@@ -579,24 +673,11 @@ void updateSetupMode() {
                 canvas.drawString(display.c_str(), 10, 42);
             }
             canvas.setTextColor(Color::STATUS_DIM);
-            canvas.drawString("[Enter] keep/confirm", 10, 62);
-            canvas.drawString("[Tab] cancel", 170, 62);
+            canvas.drawString(u8"[Enter] \u4fdd\u7559/\u786e\u8ba4", 10, 62);
+            canvas.drawString(u8"[Tab] \u53d6\u6d88", 170, 62);
             break;
-
-        case SetupStep::STT_HOST:
-            canvas.drawString("STT Proxy Host:", 10, 25);
-            getDefaultHint(hint, sizeof(hint), Config::getSttHost(), false);
-            canvas.setTextColor(Color::STATUS_DIM);
-            canvas.drawString(hint, 110, 25);
-            canvas.setTextColor(Color::WHITE);
-            canvas.drawString((setupInput + "_").c_str(), 10, 42);
-            canvas.setTextColor(Color::STATUS_DIM);
-            canvas.drawString("[Enter] keep/confirm", 10, 62);
-            canvas.drawString("[Tab] cancel", 170, 62);
-            break;
-
         case SetupStep::CONNECTING:
-            canvas.drawString("Connecting to WiFi...", 50, 55);
+            canvas.drawString(u8"\u6b63\u5728\u8fde\u63a5 WiFi...", 50, 55);
             {
                 static int dots = 0;
                 static const char* dotStr[] = {"", ".", "..", "..."};
@@ -605,7 +686,6 @@ void updateSetupMode() {
             }
             break;
     }
-
     canvas.pushSprite(0, 0);
 }
 
@@ -646,36 +726,12 @@ void handleSetupKey(char key, bool enter, bool backspace, bool tab) {
                 Config::setPassword(setupInput);
             }
             setupInput = "";
-            setupStep = SetupStep::GATEWAY_HOST;
+            setupStep = SetupStep::API_KEY_STEP;
             break;
 
-        case SetupStep::GATEWAY_HOST:
-            if (setupInput.length() > 0) {
-                Config::setGatewayHost(setupInput);
-            }
-            setupInput = "";
-            setupStep = SetupStep::GATEWAY_PORT;
-            break;
-
-        case SetupStep::GATEWAY_PORT:
-            if (setupInput.length() > 0) {
-                Config::setGatewayPort(setupInput);
-            }
-            setupInput = "";
-            setupStep = SetupStep::GATEWAY_TOKEN;
-            break;
-
-        case SetupStep::GATEWAY_TOKEN:
+        case SetupStep::API_KEY_STEP:
             if (setupInput.length() > 0) {
                 Config::setGatewayToken(setupInput);
-            }
-            setupInput = "";
-            setupStep = SetupStep::STT_HOST;
-            break;
-
-        case SetupStep::STT_HOST:
-            if (setupInput.length() > 0) {
-                Config::setSttHost(setupInput);
             }
             Config::save();
             setupInput = "";
@@ -707,12 +763,13 @@ bool tryConnect(const String& ssid, const String& pass) {
 
         // Update connecting screen
         canvas.fillScreen(Color::BG_DAY);
+        canvas.setFont(&fonts::efontCN_12);
         canvas.setTextColor(Color::CLOCK_TEXT);
         canvas.setTextSize(1);
 
         char msg[64];
         static const char* dotSuffix[] = {".", "..", "...", "...."};
-        snprintf(msg, sizeof(msg), "Connecting to %s%s", ssid.c_str(), dotSuffix[attempts % 4]);
+        snprintf(msg, sizeof(msg), u8"\u8fde\u63a5 %s%s", ssid.c_str(), dotSuffix[attempts % 4]);
         // Truncate if too long for screen, respecting UTF-8 boundaries
         if (strlen(msg) > 38) {
             int cut = 38;
@@ -750,14 +807,15 @@ void connectWiFi() {
 
         // WiFi failed — show options menu
         canvas.fillScreen(Color::BG_DAY);
+        canvas.setFont(&fonts::efontCN_12);
         canvas.setTextColor(rgb565(220, 80, 80));
         canvas.setTextSize(1);
-        canvas.drawString("WiFi failed!", 80, 20);
+        canvas.drawString(u8"WiFi \u8fde\u63a5\u5931\u8d25!", 66, 20);
 
         canvas.setTextColor(Color::CLOCK_TEXT);
-        canvas.drawString("[Enter]  Retry", 60, 48);
-        canvas.drawString("[Fn+R]   Setup wizard", 60, 63);
-        canvas.drawString("[Tab]    Offline mode", 60, 78);
+        canvas.drawString(u8"[Enter] \u91cd\u8bd5", 60, 48);
+        canvas.drawString(u8"[Fn+R] \u8bbe\u7f6e\u5411\u5bfc", 60, 63);
+        canvas.drawString(u8"[Tab] \u79bb\u7ebf\u6a21\u5f0f", 60, 78);
         canvas.pushSprite(0, 0);
 
         // Wait for user choice
@@ -801,20 +859,21 @@ void initOnlineServices(bool usedSecondary) {
 
     // Show success briefly
     canvas.fillScreen(Color::BG_DAY);
+    canvas.setFont(&fonts::efontCN_12);
     canvas.setTextColor(Color::CHAT_AI);
     canvas.setTextSize(1);
-    canvas.drawString("WiFi connected!", 70, 50);
+    canvas.drawString(u8"WiFi \u5df2\u8fde\u63a5!", 72, 50);
     canvas.drawString(WiFi.localIP().toString().c_str(), 80, 65);
     canvas.pushSprite(0, 0);
     delay(1000);
 
-    // Use secondary gateway host if connected via secondary WiFi
+    // Use secondary API host if connected via secondary WiFi
     String gwHost = Config::getGatewayHost();
     String sttHost = Config::getSttHost();
     if (usedSecondary && Config::getGatewayHost2().length() > 0) {
         String primaryGwHost = gwHost;
         gwHost = Config::getGatewayHost2();
-        Serial.printf("[WIFI] Using secondary gateway: %s\n", gwHost.c_str());
+        Serial.printf("[WIFI] Using secondary API host: %s\n", gwHost.c_str());
         // If STT host was same as primary gateway, switch it too
         if (sttHost == primaryGwHost) {
             sttHost = gwHost;
@@ -828,18 +887,17 @@ void initOnlineServices(bool usedSecondary) {
     String gwToken = Config::getGatewayToken();
     String sttPort = Config::getSttPort();
 
-    // Init AI client
+    // Init direct chat API client
     aiClient.begin(Config::getApiKey(), gwHost, gwPort, gwToken);
 
-    // Init weather BEFORE voice buffer — TLS needs heap headroom for handshake.
-    // Uses setBufferSizes(1024,512) to minimize TLS heap fragmentation so that
-    // the 160KB voice buffer can still find a contiguous block afterward.
+    // Init weather before any voice buffers so chat TLS gets maximum headroom.
     weatherClient.begin(Config::getCity());
 
-    // Init voice input — allocates 160KB contiguous buffer
+    // Init voice input metadata only. Buffer allocation is now on-demand so
+    // text chat does not lose heap to audio before the user actually needs it.
     voiceInput.begin(sttHost, sttPort);
 
-    // Init TTS playback — reuses voice input's buffer (mic & speaker share GPIO 43)
+    // Init TTS playback. Shared audio buffer is attached on-demand.
     ttsPlayback.begin(sttHost, sttPort,
                       voiceInput.getBuffer(), voiceInput.getMaxSamples());
 
@@ -875,3 +933,4 @@ void enterChatMode() {
     appMode = AppMode::CHAT;
     chat.begin(canvas);
 }
+

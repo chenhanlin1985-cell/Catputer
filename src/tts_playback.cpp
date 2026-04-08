@@ -11,6 +11,12 @@ void TTSPlayback::begin(const String& host, const String& port,
                   host.c_str(), port.c_str(), sharedBuf, maxSamp);
 }
 
+void TTSPlayback::setBuffer(int16_t* sharedBuf, size_t maxSamp) {
+    buffer = sharedBuf;
+    maxSamples = maxSamp;
+    Serial.printf("[TTS] Buffer updated: %p, maxSamples=%zu\n", sharedBuf, maxSamp);
+}
+
 bool TTSPlayback::requestAndPlay(const char* text) {
     if (!buffer || !text || text[0] == '\0') return false;
 
@@ -38,7 +44,7 @@ void TTSPlayback::stop() {
 
 size_t TTSPlayback::downloadPCM(const char* text) {
     WiFiClient client;
-    client.setTimeout(15);  // 15s timeout per read
+    client.setTimeout(15000);  // milliseconds
 
     int port = atoi(ttsPort.c_str());
     if (port <= 0 || port > 65535) {
@@ -87,6 +93,7 @@ size_t TTSPlayback::downloadPCM(const char* text) {
     // Read HTTP response headers
     unsigned long deadline = millis() + 30000;
     bool httpOk = false;
+    int httpStatus = 0;
     int contentLength = -1;
     char hdrBuf[256];
     int hdrLen = 0;
@@ -98,7 +105,12 @@ size_t TTSPlayback::downloadPCM(const char* text) {
             if (hdrLen > 0 && hdrBuf[hdrLen - 1] == '\r') hdrLen--;
             hdrBuf[hdrLen] = '\0';
             if (hdrLen == 0) break;  // end of headers
-            if (strstr(hdrBuf, "HTTP/") == hdrBuf && strstr(hdrBuf, "200")) httpOk = true;
+            if (strstr(hdrBuf, "HTTP/") == hdrBuf) {
+                Serial.printf("[TTS] Status: %s\n", hdrBuf);
+                const char* statusPtr = strchr(hdrBuf, ' ');
+                if (statusPtr) httpStatus = atoi(statusPtr + 1);
+                if (httpStatus == 200) httpOk = true;
+            }
             // Parse Content-Length
             if (strncasecmp(hdrBuf, "Content-Length:", 15) == 0) {
                 contentLength = atoi(hdrBuf + 15);
@@ -110,6 +122,17 @@ size_t TTSPlayback::downloadPCM(const char* text) {
     }
 
     if (!httpOk) {
+        char errBody[256];
+        int errLen = 0;
+        unsigned long errDeadline = millis() + 2000;
+        while ((client.connected() || client.available()) && millis() < errDeadline && errLen < (int)sizeof(errBody) - 1) {
+            if (!client.available()) { delay(5); continue; }
+            errBody[errLen++] = client.read();
+        }
+        errBody[errLen] = '\0';
+        if (errLen > 0) {
+            Serial.printf("[TTS] Error body: %s\n", errBody);
+        }
         Serial.println("[TTS] HTTP error from proxy");
         client.stop();
         return 0;
@@ -150,6 +173,7 @@ void TTSPlayback::drawSpeakingBar(M5Canvas& canvas) {
     canvas.fillRect(0, barY, SCREEN_W, INPUT_BAR_H, speakColor);
     canvas.drawFastHLine(0, barY, SCREEN_W, rgb565(60, 160, 80));
 
+    canvas.setFont(&fonts::efontCN_12);
     canvas.setTextColor(Color::CHAT_AI);
     canvas.setTextSize(1);
 

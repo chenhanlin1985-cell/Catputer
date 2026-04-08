@@ -2,6 +2,8 @@
 #include <M5Cardputer.h>
 #include "utils.h"
 #include "weather_client.h"
+#include "config.h"
+#include "pet_storage.h"
 
 enum class CompanionState {
     IDLE,
@@ -32,16 +34,26 @@ public:
 
     void setWeather(const WeatherData& wd) { weather = wd; }
 
-    // Moisture system
-    void spray();
-    int getMoistureLevel() const { return moistureLevel; }
-    void debugSetMoisture(int level) { moistureLevel = max(0, min(4, level)); Serial.printf("[MOISTURE] Debug set -> %d\n", moistureLevel); }
     int getHumidityPercent() const { return weather.humidity; }
 
     // Weather simulation mode
     void toggleWeatherSim();
     void setSimWeatherType(int index); // 1-8
     bool isWeatherSimMode() const { return weatherSimMode; }
+    uint8_t getFullness() const { return fullness; }
+    uint8_t getMood() const { return mood; }
+    uint8_t getEnergy() const { return energy; }
+    uint8_t getCleanliness() const { return cleanliness; }
+    uint8_t getBond() const { return bond; }
+    void feed();
+    void play();
+    void nap();
+    void cleanUp();
+    void startToyGame();
+    void startOuting();
+    void showSouvenirs();
+    void showActionHelp(unsigned long durationMs = 4000);
+    void toggleStatsPanel();
 
     CompanionState getState() const { return state; }
     WeatherType getWeatherType() const { return weather.type; }
@@ -63,6 +75,7 @@ public:
     static void playHappy();
 
 private:
+    static constexpr uint8_t MAX_SOUVENIR_SLOTS = PetStorage::MAX_SOUVENIRS;
     CompanionState state = CompanionState::IDLE;
     int frameIndex = 0;
     int charX = 0, charY = 0;  // pixel position (initialized in begin())
@@ -87,17 +100,36 @@ private:
     void drawBackground(M5Canvas& canvas);
     void drawWeatherEffects(M5Canvas& canvas);
     void drawCharacter(M5Canvas& canvas);
+    void drawConditionEffects(M5Canvas& canvas, int drawX, int drawY);
     void drawClock(M5Canvas& canvas);
     void drawSleepZ(M5Canvas& canvas);
     void drawStatusText(M5Canvas& canvas);
+    void drawPetMeters(M5Canvas& canvas);
+    void drawActionBar(M5Canvas& canvas);
+    void drawStatsPanel(M5Canvas& canvas);
+    void drawQuickHint(M5Canvas& canvas);
+    void drawToyGame(M5Canvas& canvas);
+    void drawOutingScene(M5Canvas& canvas);
+    void drawSouvenirViewer(M5Canvas& canvas);
     void drawDayElements(M5Canvas& canvas);
     void drawAccessory(M5Canvas& canvas, int charDrawX, int charDrawY);
+    void drawBondHearts(M5Canvas& canvas, int startX, int y);
     void drawSimStatusBar(M5Canvas& canvas);
     static AccessoryType getAccessoryForWeather(WeatherType type);
 
     void setState(CompanionState newState);
     void initStars();
     void trySpontaneousAction();
+    void loadPetProgress();
+    void savePetProgress(bool force = false);
+    void loadSouvenirs();
+    void pushSouvenir(const char* item, const char* note);
+    void updatePetNeeds();
+    void updateToyGame();
+    void updateOuting();
+    void markPetProgressDirty();
+    void setTemporaryStatus(const char* text, unsigned long durationMs = 2200);
+    void placeToyTarget();
 
     // Weather simulation
     bool weatherSimMode = false;
@@ -118,25 +150,48 @@ private:
 
     void initWeatherParticles();
 
-    // Moisture system
-    int moistureLevel = 2;              // 0-4, start mid-low for engagement
-    bool moistureInitialized = false;   // set initial based on first weather
-    Timer moistureDecayTimer{1200000};  // 20min default
-    Timer moistureRecoverTimer{900000}; // 15min rain auto-recover
-    unsigned long lastSprayTime = 0;
-    static constexpr unsigned long SPRAY_COOLDOWN = 3000;
-    int moveStepCount = 0;              // movement drains moisture
-    static constexpr int STEPS_PER_DRAIN = 20;  // every 20 steps = -1 moisture
-
-    struct SprayParticle { int16_t x, y; int8_t vx, vy; uint8_t life; };
-    static constexpr int MAX_SPRAY = 5;
-    SprayParticle sprayParticles[MAX_SPRAY];
-    bool sprayActive = false;
-
     void updateMoisture();
-    void playSpraySound();
-    void drawMoistureDrops(M5Canvas& canvas, int startX, int y);
     void drawSprayParticles(M5Canvas& canvas);
+
+    // Offline pet progression
+    bool petProgressLoaded = false;
+    bool petProgressDirty = false;
+    bool souvenirsLoaded = false;
+    uint8_t fullness = 75;
+    uint8_t mood = 70;
+    uint8_t energy = 80;
+    uint8_t cleanliness = 78;
+    uint8_t bond = 35;
+    Timer fullnessDecayTimer{300000}; // 5 min
+    Timer moodDecayTimer{420000};     // 7 min
+    Timer energyDecayTimer{480000};   // 8 min
+    Timer cleanlinessDecayTimer{540000}; // 9 min
+    Timer bondDecayTimer{1800000};    // 30 min
+    Timer sleepRecoverTimer{240000};  // 4 min
+    Timer petSaveTimer{15000};        // batch writes to NVS
+    unsigned long temporaryStatusUntil = 0;
+    char temporaryStatus[24] = "";
+    bool toyGameActive = false;
+    uint8_t toyCatchCount = 0;
+    unsigned long toyGameEndsAt = 0;
+    int toyTargetX = 0;
+    int toyTargetY = 0;
+    bool outingActive = false;
+    unsigned long outingEndsAt = 0;
+    unsigned long lastOutingTime = 0;
+    char lastOutingFind[64] = "";
+    char souvenirItems[MAX_SOUVENIR_SLOTS][PetStorage::SOUVENIR_ITEM_LEN] = {{0}};
+    char souvenirNotes[MAX_SOUVENIR_SLOTS][PetStorage::SOUVENIR_NOTE_LEN] = {{0}};
+    uint8_t souvenirCount = 0;
+    uint8_t souvenirViewIndex = 0;
+    unsigned long souvenirViewerUntil = 0;
+    unsigned long lastFeedTime = 0;
+    unsigned long lastPlayTime = 0;
+    unsigned long lastCleanTime = 0;
+    unsigned long lastGameTime = 0;
+    unsigned long actionHelpUntil = 0;
+    bool statsPanelVisible = false;
+    bool helpPanelVisible = false;
 
     // Draw a sprite with transparency (flip=true for horizontal mirror)
     void drawSprite16(M5Canvas& canvas, int x, int y, const uint16_t* data, bool flip = false);

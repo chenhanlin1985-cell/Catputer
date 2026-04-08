@@ -7,3 +7,12 @@
 .DS_Store
 CLAUDE.md
 *.app/
+clawputer.local.ps1
+.logs/
+.tmp/
+.tools/
+tools/__pycache__/
+*.pyc
+openclaw-token.txt
+qwen-test.json
+sse-test-body.json

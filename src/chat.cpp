@@ -75,9 +75,8 @@ void Chat::update(M5Canvas& canvas) {
     canvas.setFont(&fonts::efontCN_12);
     canvas.setTextSize(1);
 
-    // Header
     canvas.setTextColor(Color::CLOCK_TEXT);
-    canvas.drawString("[TAB]back [;/]scroll [Fn]voice", 4, 2);
+    canvas.drawString(u8"[TAB]\u8fd4\u56de [;/]\u6eda\u52a8 [Fn]\u8bed\u97f3 [Ctrl+\u56de\u8f66]\u6717\u8bfb", 4, 2);
     canvas.drawFastHLine(0, MSG_AREA_Y - 1, SCREEN_W, Color::GROUND_TOP);
 
     drawMessages(canvas);
@@ -92,10 +91,8 @@ void Chat::handleKey(char key) {
 }
 
 void Chat::handleEnter() {
-    if (moistureLevel == 0) return;  // too thirsty to chat
     if (inputBuffer.length() == 0 || waitingForAI) return;
 
-    // Detect /draw commands before consuming input
     drawMode = false;
     drawSize = 8;
     if (inputBuffer.startsWith("/draw16")) {
@@ -112,8 +109,7 @@ void Chat::handleEnter() {
     waitingForAI = true;
     userScrolled = false;
 
-    // Add placeholder for AI response
-    addMessage(drawMode ? "drawing..." : "thinking...", false);
+    addMessage(drawMode ? u8"\u7ed8\u5236\u4e2d..." : u8"\u601d\u8003\u4e2d...", false);
 }
 
 void Chat::handleBackspace() {
@@ -139,7 +135,7 @@ void Chat::scrollDown() {
 void Chat::appendAIToken(const char* token) {
     if (messageCount > 0 && !messages[(messageCount - 1) % MAX_MESSAGES].isUser) {
         Message& lastMsg = messages[(messageCount - 1) % MAX_MESSAGES];
-        if (lastMsg.text == "thinking...") {
+        if (lastMsg.text == u8"\u601d\u8003\u4e2d...") {
             lastMsg.text = token;
         } else {
             lastMsg.text += token;
@@ -326,26 +322,19 @@ void Chat::drawInputBar(M5Canvas& canvas) {
     canvas.setTextColor(Color::WHITE);
     canvas.setTextSize(1);
 
-    if (moistureLevel == 0) {
-        canvas.setTextColor(rgb565(255, 100, 80));
-        canvas.drawString("thirsty... press H to spray!", 6, barY + 4);
-    } else if (waitingForAI) {
+    if (waitingForAI) {
         canvas.setTextColor(Color::STATUS_DIM);
-        const char* hint = drawMode ? "drawing..." : (aiThinking ? "thinking..." : "waiting...");
+        const char* hint = drawMode ? u8"\u7ed8\u5236\u4e2d..." : (aiThinking ? u8"\u601d\u8003\u4e2d..." : u8"\u7b49\u5f85\u4e2d...");
         canvas.drawString(hint, 4, barY + 4);
     } else {
-        // Show input with cursor — use snprintf to avoid String concatenation
         char display[128];
         snprintf(display, sizeof(display), "> %s_", inputBuffer.c_str());
-        // Truncate from left if too long
         const char* p = display;
         while (canvas.textWidth(p) > SCREEN_W - 8 && strlen(p) > 4) {
-            p += 1; // skip one byte forward
-            // Skip UTF-8 continuation bytes
+            p += 1;
             while ((*p & 0xC0) == 0x80) p++;
         }
         if (p != display) {
-            // We truncated — show with ">" prefix
             char truncated[128];
             snprintf(truncated, sizeof(truncated), "> %s", p);
             canvas.drawString(truncated, 4, barY + 4);

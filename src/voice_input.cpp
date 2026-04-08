@@ -6,10 +6,17 @@ void VoiceInput::begin(const String& host, const String& port) {
     sttHostStr = host;
     sttPortStr = port;
     maxSamples = (size_t)(SAMPLE_RATE * MAX_RECORD_SEC);
-    // Allocate buffer once at startup and keep it permanently.
-    // Heap is least fragmented now; freeing and re-allocating later fails
-    // because WiFi/system allocations split the contiguous block.
-    allocBuffer();
+    Serial.printf("[VOICE] Ready on demand, host=%s:%s\n", host.c_str(), port.c_str());
+}
+
+bool VoiceInput::ensureReady() {
+    if (recordBuffer) return true;
+    return allocBuffer();
+}
+
+void VoiceInput::releaseIfIdle() {
+    if (recording || transcribing) return;
+    freeBuffer();
 }
 
 bool VoiceInput::allocBuffer() {
@@ -74,12 +81,16 @@ void VoiceInput::initMic() {
 void VoiceInput::deinitMic() {
     M5Cardputer.Mic.end();
     M5Cardputer.Speaker.begin();
-    M5Cardputer.Speaker.setVolume(255);
+    M5Cardputer.Speaker.setVolume(Config::getSpeakerVolume());
     Serial.println("[VOICE] Mic stopped, speaker restored");
 }
 
 void VoiceInput::startRecording() {
-    if (recording || maxSamples == 0 || !recordBuffer) return;
+    if (recording || maxSamples == 0) return;
+    if (!recordBuffer && !allocBuffer()) {
+        Serial.println("[VOICE] Cannot start recording, buffer alloc failed");
+        return;
+    }
 
     samplesRecorded = 0;
     recording = true;
@@ -211,7 +222,7 @@ String VoiceInput::sendToSTT(const int16_t* data, size_t sampleCount) {
 
     // Connect to local STT proxy over HTTP (proxy forwards to Groq HTTPS)
     WiFiClient client;
-    client.setTimeout(30);
+    client.setTimeout(30000);
 
     int port = atoi(sttPortStr.c_str());
     if (port <= 0 || port > 65535) {
@@ -384,11 +395,12 @@ void VoiceInput::drawTranscribingBar(M5Canvas& canvas) {
     canvas.fillRect(0, barY, SCREEN_W, INPUT_BAR_H, Color::INPUT_BG);
     canvas.drawFastHLine(0, barY, SCREEN_W, Color::GROUND_TOP);
 
+    canvas.setFont(&fonts::efontCN_12);
     canvas.setTextColor(Color::CHAT_AI);
     canvas.setTextSize(1);
 
     static const char* msgs[] = {
-        "Transcribing", "Transcribing.", "Transcribing..", "Transcribing..."
+        u8"\u8f6c\u5199\u4e2d", u8"\u8f6c\u5199\u4e2d.", u8"\u8f6c\u5199\u4e2d..", u8"\u8f6c\u5199\u4e2d..."
     };
     canvas.drawString(msgs[(millis() / 400) % 4], 4, barY + 4);
 }

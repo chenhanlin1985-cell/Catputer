@@ -9,10 +9,10 @@ public:
     using DoneCallback = std::function<void()>;
     using ErrorCallback = std::function<void(const String& error)>;
 
-    void begin(const String& apiKey, const String& gwHost,
-               const String& gwPort, const String& gwToken);
+    void begin(const String& apiKey, const String& apiHost,
+               const String& apiPort, const String& authToken);
 
-    // Send message to OpenClaw gateway with SSE streaming.
+    // Send message to an OpenAI-compatible chat completions endpoint with SSE streaming.
     // Calls onToken for each text token, onDone when complete, onError on failure.
     void sendMessage(const String& userMessage,
                      TokenCallback onToken,
@@ -47,9 +47,9 @@ private:
     CompanionContext companionCtx;
     String lastResponse;
     String apiKey;
-    String gwHost;
-    String gwPort;
-    String gwToken;
+    String apiHost;
+    String apiPort;
+    String authToken;
     bool busy = false;
 
     // Conversation history (keep last N exchanges for context)

@@ -24,6 +24,16 @@ namespace Config {
     const String& getPassword2();
     const String& getGatewayHost2();
     const String& getCity();
+    uint8_t getSpeakerVolume();
+    bool getAutoSpeak();
+    uint8_t getPetFullness();
+    uint8_t getPetMood();
+    uint8_t getPetEnergy();
+    uint8_t getPetCleanliness();
+    uint8_t getPetBond();
+    const String& getSouvenirSlot(uint8_t index);
+    const String& getSouvenirNoteSlot(uint8_t index);
+    uint8_t getSouvenirCount();
 
     // Setters
     void setSSID(const String& ssid);
@@ -38,6 +48,16 @@ namespace Config {
     void setPassword2(const String& password);
     void setGatewayHost2(const String& host);
     void setCity(const String& city);
+    void setSpeakerVolume(uint8_t volume);
+    void setAutoSpeak(bool enabled);
+    void setPetFullness(uint8_t value);
+    void setPetMood(uint8_t value);
+    void setPetEnergy(uint8_t value);
+    void setPetCleanliness(uint8_t value);
+    void setPetBond(uint8_t value);
+    void setSouvenirSlot(uint8_t index, const String& value);
+    void setSouvenirNoteSlot(uint8_t index, const String& value);
+    void setSouvenirCount(uint8_t count);
 
     // Check if config is valid (has WiFi credentials)
     bool isValid();

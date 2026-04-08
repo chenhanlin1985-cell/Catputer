@@ -1,0 +1,24 @@
+# Copy this file to `clawputer.local.ps1` and fill in your values.
+# Example:
+#   Copy-Item .\clawputer.local.ps1.example .\clawputer.local.ps1
+
+$env:WIFI_SSID = "your-2.4g-wifi-ssid"
+$env:WIFI_PASS = "your-wifi-password"
+
+$env:API_HOST = "dashscope.aliyuncs.com"
+$env:API_PORT = "443"
+$env:API_KEY = "replace-me"
+
+$env:GROQ_API_KEY = "replace-me"
+$env:STT_PROXY_HOST = "127.0.0.1"
+$env:STT_PROXY_PORT = "8090"
+
+$env:DEFAULT_CITY = "Shenzhen"
+
+# Optional fallback WiFi / hotspot
+$env:WIFI_SSID2 = ""
+$env:WIFI_PASS2 = ""
+$env:API_HOST2 = ""
+
+# Optional local ffmpeg path. Leave empty if ffmpeg is already in PATH.
+$env:FFMPEG_BIN = ""
