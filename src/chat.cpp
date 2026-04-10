@@ -1,6 +1,51 @@
 #include "chat.h"
 #include <cstring>
 
+struct ImeEntry {
+    const char* pinyin;
+    const char* candidates[5];
+};
+
+static const ImeEntry IME_ENTRIES[] = {
+    {"ni", {"你", "呢", "泥", nullptr, nullptr}},
+    {"hao", {"好", "号", "浩", nullptr, nullptr}},
+    {"nihao", {"你好", nullptr, nullptr, nullptr, nullptr}},
+    {"wo", {"我", "握", nullptr, nullptr, nullptr}},
+    {"women", {"我们", nullptr, nullptr, nullptr, nullptr}},
+    {"woai", {"我爱", nullptr, nullptr, nullptr, nullptr}},
+    {"woaini", {"我爱你", nullptr, nullptr, nullptr, nullptr}},
+    {"shi", {"是", "时", "事", nullptr, nullptr}},
+    {"de", {"的", "得", "德", nullptr, nullptr}},
+    {"le", {"了", "乐", nullptr, nullptr, nullptr}},
+    {"ma", {"吗", "嘛", nullptr, nullptr, nullptr}},
+    {"shenme", {"什么", nullptr, nullptr, nullptr, nullptr}},
+    {"weishenme", {"为什么", nullptr, nullptr, nullptr, nullptr}},
+    {"zenme", {"怎么", nullptr, nullptr, nullptr, nullptr}},
+    {"xianzai", {"现在", nullptr, nullptr, nullptr, nullptr}},
+    {"jintian", {"今天", nullptr, nullptr, nullptr, nullptr}},
+    {"mingtian", {"明天", nullptr, nullptr, nullptr, nullptr}},
+    {"tianqi", {"天气", nullptr, nullptr, nullptr, nullptr}},
+    {"shenzhen", {"深圳", nullptr, nullptr, nullptr, nullptr}},
+    {"wozai", {"我在", nullptr, nullptr, nullptr, nullptr}},
+    {"zheli", {"这里", nullptr, nullptr, nullptr, nullptr}},
+    {"huijia", {"回家", nullptr, nullptr, nullptr, nullptr}},
+    {"chumen", {"出门", nullptr, nullptr, nullptr, nullptr}},
+    {"xihuan", {"喜欢", nullptr, nullptr, nullptr, nullptr}},
+    {"maomi", {"猫咪", nullptr, nullptr, nullptr, nullptr}},
+    {"juzi", {"橘子", nullptr, nullptr, nullptr, nullptr}},
+    {"jumao", {"橘猫", nullptr, nullptr, nullptr, nullptr}},
+    {"wan", {"玩", "晚", nullptr, nullptr, nullptr}},
+    {"wanle", {"玩乐", nullptr, nullptr, nullptr, nullptr}},
+    {"chi", {"吃", "迟", nullptr, nullptr, nullptr}},
+    {"shui", {"睡", "水", nullptr, nullptr, nullptr}},
+    {"qingli", {"清理", nullptr, nullptr, nullptr, nullptr}},
+    {"xiexie", {"谢谢", nullptr, nullptr, nullptr, nullptr}},
+    {"zaijian", {"再见", nullptr, nullptr, nullptr, nullptr}},
+    {"keyi", {"可以", nullptr, nullptr, nullptr, nullptr}},
+    {"bukeyi", {"不可以", nullptr, nullptr, nullptr, nullptr}},
+    {"duibuqi", {"对不起", nullptr, nullptr, nullptr, nullptr}},
+};
+
 // ── UTF-8 safe line-break helper ──
 // Given text starting at `start`, find how many bytes fit within maxW pixels.
 // Returns byte count, ensuring we don't split a multi-byte UTF-8 character.
@@ -51,7 +96,7 @@ static int countWrappedLines(M5Canvas& canvas, const char* text, int maxW, char*
     return lines;
 }
 
-void Chat::begin(M5Canvas& canvas) {
+void Chat::ensureStorage() {
     if (!initialized) {
         messageCount = 0;
         inputBuffer = "";
@@ -64,6 +109,11 @@ void Chat::begin(M5Canvas& canvas) {
         }
         initialized = true;
     }
+}
+
+void Chat::begin(M5Canvas& canvas) {
+    ensureStorage();
+    ImeDict::begin();
     canvas.setFont(&fonts::efontCN_12);
     canvas.setTextSize(1);
     totalContentH = calcTotalHeight(canvas);
@@ -85,6 +135,32 @@ void Chat::update(M5Canvas& canvas) {
 
 void Chat::handleKey(char key) {
     if (waitingForAI) return;
+    if (chineseInputMode) {
+        if (pinyinBuffer.length() > 0) {
+            if (key == '-') {
+                pageImeCandidates(-IME_PAGE_SIZE);
+                return;
+            }
+            if (key == '+' || key == '=') {
+                pageImeCandidates(IME_PAGE_SIZE);
+                return;
+            }
+        }
+        if (key >= '1' && key <= '5') {
+            if (commitImeCandidate(key - '1')) return;
+        }
+        if ((key >= 'a' && key <= 'z') || (key >= 'A' && key <= 'Z')) {
+            if (pinyinBuffer.length() < 24) {
+                char lower = (key >= 'A' && key <= 'Z') ? (key - 'A' + 'a') : key;
+                pinyinBuffer += lower;
+                refreshImeCandidates();
+            }
+            return;
+        }
+        if (key == ' ') {
+            if (commitImeCandidate(0)) return;
+        }
+    }
     if (inputBuffer.length() < 100) {
         inputBuffer += key;
     }
@@ -113,9 +189,50 @@ void Chat::handleEnter() {
 }
 
 void Chat::handleBackspace() {
+    if (chineseInputMode && pinyinBuffer.length() > 0) {
+        pinyinBuffer.remove(pinyinBuffer.length() - 1);
+        refreshImeCandidates();
+        return;
+    }
     if (inputBuffer.length() > 0) {
         inputBuffer.remove(inputBuffer.length() - 1);
     }
+}
+
+void Chat::toggleChineseInput() {
+    chineseInputMode = !chineseInputMode;
+    if (!chineseInputMode) {
+        pinyinBuffer = "";
+        imeCandidateCount = 0;
+        imePageStart = 0;
+    } else {
+        refreshImeCandidates();
+    }
+}
+
+void Chat::refreshImeCandidates() {
+    imeCandidateCount = ImeDict::lookup(pinyinBuffer, imeCandidates, MAX_IME_CANDIDATES);
+    imePageStart = 0;
+}
+
+bool Chat::commitImeCandidate(int index) {
+    int actualIndex = imePageStart + index;
+    if (actualIndex < 0 || actualIndex >= imeCandidateCount) return false;
+    inputBuffer += imeCandidates[actualIndex];
+    pinyinBuffer = "";
+    imeCandidateCount = 0;
+    imePageStart = 0;
+    return true;
+}
+
+void Chat::pageImeCandidates(int delta) {
+    if (imeCandidateCount <= IME_PAGE_SIZE) return;
+    int newStart = imePageStart + delta;
+    if (newStart < 0) newStart = 0;
+    if (newStart >= imeCandidateCount) newStart = imePageStart;
+    int lastPageStart = ((imeCandidateCount - 1) / IME_PAGE_SIZE) * IME_PAGE_SIZE;
+    if (newStart > lastPageStart) newStart = lastPageStart;
+    imePageStart = newStart;
 }
 
 void Chat::scrollUp() {
@@ -177,6 +294,38 @@ String Chat::takePendingMessage() {
 
 void Chat::setInput(const String& text) {
     inputBuffer = text;
+}
+
+bool Chat::getMessageAt(int logicalIndex, String& text, bool& isUser) const {
+    int total = min(messageCount, MAX_MESSAGES);
+    if (logicalIndex < 0 || logicalIndex >= total) return false;
+    int startIdx = (messageCount > MAX_MESSAGES) ? (messageCount - MAX_MESSAGES) : 0;
+    int idx = (startIdx + logicalIndex) % MAX_MESSAGES;
+    text = messages[idx].text;
+    isUser = messages[idx].isUser;
+    return true;
+}
+
+void Chat::clearMessages() {
+    ensureStorage();
+    messageCount = 0;
+    pendingMessage = "";
+    waitingForAI = false;
+    scrollY = 0;
+    totalContentH = 0;
+    userScrolled = false;
+    for (int i = 0; i < MAX_MESSAGES; i++) {
+        messages[i].text = "";
+        messages[i].isUser = false;
+        messages[i].isPixelArt = false;
+        messages[i].pixelSize = 0;
+        messages[i].pixelSlot = -1;
+    }
+}
+
+void Chat::importMessage(const String& text, bool isUser) {
+    ensureStorage();
+    addMessage(text, isUser);
 }
 
 void Chat::addMessage(const String& text, bool isUser) {
@@ -327,6 +476,24 @@ void Chat::drawInputBar(M5Canvas& canvas) {
         const char* hint = drawMode ? u8"\u7ed8\u5236\u4e2d..." : (aiThinking ? u8"\u601d\u8003\u4e2d..." : u8"\u7b49\u5f85\u4e2d...");
         canvas.drawString(hint, 4, barY + 4);
     } else {
+        if (chineseInputMode && pinyinBuffer.length() > 0) {
+            canvas.setTextColor(Color::STATUS_DIM);
+            String imeLine = u8"拼:" + pinyinBuffer;
+            if (imeCandidateCount > 0) {
+                imeLine += " ";
+                int visibleCount = min(IME_PAGE_SIZE, imeCandidateCount - imePageStart);
+                for (int i = 0; i < visibleCount; i++) {
+                    imeLine += String(i + 1) + imeCandidates[imePageStart + i] + " ";
+                }
+                if (imeCandidateCount > IME_PAGE_SIZE) {
+                    int page = (imePageStart / IME_PAGE_SIZE) + 1;
+                    int pages = (imeCandidateCount + IME_PAGE_SIZE - 1) / IME_PAGE_SIZE;
+                    imeLine += u8" -/+ ";
+                    imeLine += String(page) + "/" + String(pages);
+                }
+            }
+            canvas.drawString(imeLine.c_str(), 4, barY - 10);
+        }
         char display[128];
         snprintf(display, sizeof(display), "> %s_", inputBuffer.c_str());
         const char* p = display;
@@ -342,6 +509,9 @@ void Chat::drawInputBar(M5Canvas& canvas) {
             canvas.drawString(display, 4, barY + 4);
         }
     }
+
+    canvas.setTextColor(Color::STATUS_DIM);
+    canvas.drawRightString(chineseInputMode ? u8"\u4e2d" : u8"EN", SCREEN_W - 4, barY + 4);
 }
 
 // ── Pixel Art Support ──

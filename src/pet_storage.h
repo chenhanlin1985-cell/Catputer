@@ -6,6 +6,8 @@ namespace PetStorage {
     static constexpr uint8_t MAX_SOUVENIRS = 12;
     static constexpr size_t SOUVENIR_ITEM_LEN = 48;
     static constexpr size_t SOUVENIR_NOTE_LEN = 96;
+    static constexpr uint8_t PROMPT_SLOT_COUNT = 6;
+    static constexpr size_t PROMPT_REPLY_LEN = 64;
 
     bool begin();
     bool isAvailable();
@@ -14,4 +16,8 @@ namespace PetStorage {
     bool saveSouvenirs(const char items[][SOUVENIR_ITEM_LEN], const char notes[][SOUVENIR_NOTE_LEN], uint8_t count, uint8_t maxCount = MAX_SOUVENIRS);
 
     bool appendEventLog(const char* eventType, const char* detail);
+    bool loadPromptMemory(const char* petId, int askedDayStamp[PROMPT_SLOT_COUNT], char replies[PROMPT_SLOT_COUNT][PROMPT_REPLY_LEN]);
+    bool savePromptMemory(const char* petId, const int askedDayStamp[PROMPT_SLOT_COUNT], const char replies[PROMPT_SLOT_COUNT][PROMPT_REPLY_LEN]);
+    bool appendPetMemoryEvent(const char* petId, const char* eventType, const char* detail);
+    bool loadRecentPetMemoryEvents(const char* petId, char lines[][96], uint8_t& count, uint8_t maxCount = 6);
 }

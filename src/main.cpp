@@ -1,6 +1,7 @@
 ﻿#include <M5Cardputer.h>
 #include <WiFi.h>
 #include <time.h>
+#include <ArduinoJson.h>
 #include "utils.h"
 #include "config.h"
 #include "companion.h"
@@ -75,6 +76,9 @@ SerialSDSync serialSDSync;
 enum class AppMode { SETUP, COMPANION, CHAT };
 static AppMode appMode = AppMode::SETUP;
 static bool offlineMode = false;
+static bool townSyncActive = false;
+static unsigned long townSyncLeaseUntil = 0;
+static constexpr unsigned long TOWN_SYNC_LEASE_MS = 15000;
 
 // ── Setup mode state ──
 enum class SetupStep { SSID, PASSWORD, API_KEY_STEP, CONNECTING };
@@ -90,7 +94,7 @@ static const int   DAYLIGHT_OFFSET_SEC = 0;
 void fillBuildTimeDefaults();
 void enterSetupMode();
 void updateSetupMode();
-void handleSetupKey(char key, bool enter, bool backspace, bool tab);
+void handleSetupKey(char key, bool enter, bool backspace, bool tab, bool ctrl);
 bool tryConnect(const String& ssid, const String& pass);
 void connectWiFi();
 void initOnlineServices(bool usedSecondary);
@@ -99,6 +103,22 @@ void enterChatMode();
 void applySpeakerVolume();
 void changeSpeakerVolume(int delta);
 void toggleAutoSpeak();
+void refreshWifiScanList();
+bool beginTownSync();
+bool renewTownSyncLease();
+void endTownSync(const char* message = nullptr);
+void expireTownSyncIfNeeded();
+String buildChatHistoryJson();
+String buildTownSyncSnapshotJson();
+bool applyTownSyncSnapshotJson(const String& snapshotJson);
+
+static constexpr int MAX_SCAN_RESULTS = 6;
+static String setupWifiResults[MAX_SCAN_RESULTS];
+static int setupWifiResultCount = 0;
+static int setupWifiSelectedIndex = 0;
+static int setupWifiScrollOffset = 0;
+static bool setupWifiListVisible = false;
+static bool setupWifiScanning = false;
 
 // ══════════════════════════════════════════════════════════════
 void setup() {
@@ -207,9 +227,204 @@ void toggleAutoSpeak() {
         enabled ? u8"\u5df2\u5f00\u542f" : u8"\u5df2\u5173\u95ed");
 }
 
+bool beginTownSync() {
+    if (townSyncActive) {
+        renewTownSyncLease();
+        return true;
+    }
+    townSyncActive = true;
+    townSyncLeaseUntil = millis() + TOWN_SYNC_LEASE_MS;
+    companion.setTownSyncActive(true);
+    companion.showNotification(u8"\u732b\u54aa", u8"\u5c0f\u732b\u8fdb\u57ce\u4e86", u8"\u7b49\u7535\u8111\u63a5\u8d70");
+    return true;
+}
+
+bool renewTownSyncLease() {
+    if (!townSyncActive) return false;
+    townSyncLeaseUntil = millis() + TOWN_SYNC_LEASE_MS;
+    return true;
+}
+
+void endTownSync(const char* message) {
+    if (!townSyncActive) return;
+    townSyncActive = false;
+    townSyncLeaseUntil = 0;
+    companion.setTownSyncActive(false);
+    if (message && message[0]) {
+        companion.showNotification(u8"\u732b\u54aa", u8"\u56de\u5bb6\u4e86", message);
+    }
+}
+
+void expireTownSyncIfNeeded() {
+    if (!townSyncActive) return;
+    if ((long)(millis() - townSyncLeaseUntil) <= 0) return;
+    endTownSync(u8"\u8fde\u63a5\u65ad\u5f00, \u81ea\u5df1\u56de\u5bb6");
+}
+
+String buildChatHistoryJson() {
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    int total = chat.getMessageCount();
+    int keep = total > 12 ? 12 : total;
+    int start = total - keep;
+    for (int i = 0; i < keep; i++) {
+        String text;
+        bool isUser = false;
+        if (!chat.getMessageAt(start + i, text, isUser)) continue;
+        JsonObject row = arr.add<JsonObject>();
+        row["role"] = isUser ? "user" : "ai";
+        row["text"] = text;
+    }
+    String out;
+    serializeJson(doc, out);
+    return out;
+}
+
+String buildTownSyncSnapshotJson() {
+    JsonDocument doc;
+    doc["ok"] = true;
+    JsonObject snapshot = doc["snapshot"].to<JsonObject>();
+
+    JsonObject petObj = snapshot["pet"].to<JsonObject>();
+    petObj["fullness"] = companion.getFullness();
+    petObj["mood"] = companion.getMood();
+    petObj["energy"] = companion.getEnergy();
+    petObj["cleanliness"] = companion.getCleanliness();
+    petObj["bond"] = companion.getBond();
+    petObj["id"] = companion.getPetId();
+    petObj["name"] = companion.getPetName();
+    petObj["kind"] = companion.getPetKind();
+    petObj["personality"] = companion.getPetPersonality();
+    petObj["x"] = companion.getX();
+    petObj["y"] = companion.getY();
+    petObj["facing_left"] = companion.isFacingLeft();
+    petObj["sleeping"] = companion.isSleeping();
+
+    JsonArray souvenirs = snapshot["souvenirs"].to<JsonArray>();
+    for (uint8_t i = 0; i < companion.getSouvenirCount(); i++) {
+        JsonObject item = souvenirs.add<JsonObject>();
+        item["item"] = companion.getSouvenirItem(i);
+        item["note"] = companion.getSouvenirNote(i);
+    }
+
+    JsonArray chatArr = snapshot["chat"].to<JsonArray>();
+    int total = chat.getMessageCount();
+    int keep = total > 12 ? 12 : total;
+    int start = total - keep;
+    for (int i = 0; i < keep; i++) {
+        String text;
+        bool isUser = false;
+        if (!chat.getMessageAt(start + i, text, isUser)) continue;
+        JsonObject row = chatArr.add<JsonObject>();
+        row["role"] = isUser ? "user" : "ai";
+        row["text"] = text;
+    }
+
+    int promptDays[PetStorage::PROMPT_SLOT_COUNT];
+    char promptReplies[PetStorage::PROMPT_SLOT_COUNT][PetStorage::PROMPT_REPLY_LEN] = {{0}};
+    companion.exportPromptMemory(promptDays, promptReplies);
+    JsonObject memoryObj = snapshot["memory"].to<JsonObject>();
+    JsonArray promptArr = memoryObj["prompts"].to<JsonArray>();
+    static const char* labels[PetStorage::PROMPT_SLOT_COUNT] = {
+        u8"早安", u8"早饭", u8"午饭", u8"晚饭", u8"晚睡", u8"心情"
+    };
+    for (uint8_t i = 0; i < PetStorage::PROMPT_SLOT_COUNT; i++) {
+        if (!promptReplies[i][0]) continue;
+        JsonObject row = promptArr.add<JsonObject>();
+        row["slot"] = i;
+        row["label"] = labels[i];
+        row["day"] = promptDays[i];
+        row["reply"] = promptReplies[i];
+    }
+    char memoryLines[6][96] = {{0}};
+    uint8_t memoryCount = 0;
+    if (PetStorage::loadRecentPetMemoryEvents(companion.getPetId().c_str(), memoryLines, memoryCount, 6)) {
+        JsonArray memoryEvents = memoryObj["events"].to<JsonArray>();
+        for (uint8_t i = 0; i < memoryCount; i++) {
+            memoryEvents.add(memoryLines[i]);
+        }
+    }
+
+    String out;
+    serializeJson(doc, out);
+    return out;
+}
+
+bool applyTownSyncSnapshotJson(const String& snapshotJson) {
+    JsonDocument doc;
+    if (deserializeJson(doc, snapshotJson) != DeserializationError::Ok) {
+        Serial.println("[SYNC] Failed to parse desktop snapshot");
+        return false;
+    }
+
+    JsonObject petObj = doc["pet"];
+    if (petObj.isNull()) return false;
+
+    const char* status = petObj["status"] | "";
+    companion.applySyncSnapshot(
+        petObj["fullness"] | companion.getFullness(),
+        petObj["mood"] | companion.getMood(),
+        petObj["energy"] | companion.getEnergy(),
+        petObj["cleanliness"] | companion.getCleanliness(),
+        petObj["bond"] | companion.getBond(),
+        petObj["x"] | companion.getX(),
+        petObj["y"] | companion.getY(),
+        petObj["facing_left"] | companion.isFacingLeft(),
+        petObj["sleeping"] | companion.isSleeping(),
+        status,
+        petObj["id"] | companion.getPetId().c_str(),
+        petObj["name"] | companion.getPetName().c_str(),
+        petObj["kind"] | companion.getPetKind().c_str(),
+        petObj["personality"] | companion.getPetPersonality().c_str()
+    );
+
+    char souvenirItems[PetStorage::MAX_SOUVENIRS][PetStorage::SOUVENIR_ITEM_LEN] = {{0}};
+    char souvenirNotes[PetStorage::MAX_SOUVENIRS][PetStorage::SOUVENIR_NOTE_LEN] = {{0}};
+    uint8_t souvenirCount = 0;
+    JsonArray souvenirs = doc["souvenirs"].as<JsonArray>();
+    for (JsonVariant value : souvenirs) {
+        if (souvenirCount >= PetStorage::MAX_SOUVENIRS) break;
+        const char* item = value["item"] | "";
+        const char* note = value["note"] | "";
+        strncpy(souvenirItems[souvenirCount], item, PetStorage::SOUVENIR_ITEM_LEN - 1);
+        strncpy(souvenirNotes[souvenirCount], note, PetStorage::SOUVENIR_NOTE_LEN - 1);
+        souvenirCount++;
+    }
+    companion.replaceSouvenirs(souvenirItems, souvenirNotes, souvenirCount);
+
+    chat.clearMessages();
+    JsonArray chatArr = doc["chat"].as<JsonArray>();
+    for (JsonVariant value : chatArr) {
+        String role = value["role"] | "";
+        String text = value["text"] | "";
+        if (text.length() == 0) continue;
+        chat.importMessage(text, role == "user");
+    }
+
+    int promptDays[PetStorage::PROMPT_SLOT_COUNT];
+    char promptReplies[PetStorage::PROMPT_SLOT_COUNT][PetStorage::PROMPT_REPLY_LEN] = {{0}};
+    for (uint8_t i = 0; i < PetStorage::PROMPT_SLOT_COUNT; i++) {
+        promptDays[i] = -1;
+    }
+    JsonObject memoryObj = doc["memory"];
+    JsonArray promptArr = memoryObj["prompts"].as<JsonArray>();
+    for (JsonVariant value : promptArr) {
+        int slot = value["slot"] | -1;
+        if (slot < 0 || slot >= PetStorage::PROMPT_SLOT_COUNT) continue;
+        promptDays[slot] = value["day"] | -1;
+        const char* reply = value["reply"] | "";
+        strncpy(promptReplies[slot], reply, PetStorage::PROMPT_REPLY_LEN - 1);
+        promptReplies[slot][PetStorage::PROMPT_REPLY_LEN - 1] = '\0';
+    }
+    companion.importPromptMemory(promptDays, promptReplies);
+    endTownSync(u8"\u4ece\u7535\u8111\u56de\u57ce\u4e86");
+    return true;
+}
+
 // ══════════════════════════════════════════════════════════════
 void loop() {
     M5Cardputer.update();
+    expireTownSyncIfNeeded();
 
     // Handle keyboard
     bool keyPressed = M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed();
@@ -224,9 +439,10 @@ void loop() {
                 bool enter = keys.enter;
                 bool backspace = keys.del;
                 bool tab = keys.tab;
+                bool ctrl = keys.ctrl;
                 char key = 0;
                 if (keys.word.size() > 0) key = keys.word[0];
-                handleSetupKey(key, enter, backspace, tab);
+                handleSetupKey(key, enter, backspace, tab, ctrl);
             }
             updateSetupMode();
             break;
@@ -236,6 +452,14 @@ void loop() {
             auto ks = M5Cardputer.Keyboard.keysState();
 
             if (keyPressed) {
+                char promptKey = 0;
+                if (ks.enter) promptKey = '\n';
+                else if (ks.word.size() > 0) promptKey = ks.word[0];
+                if (companion.hasActivePrompt()) {
+                    if (companion.handlePromptKey(promptKey, ks.enter, ks.del, ks.tab)) {
+                        break;
+                    }
+                }
                 if (ks.ctrl && ks.enter) {
                     toggleAutoSpeak();
                     break;
@@ -248,6 +472,30 @@ void loop() {
                 // Fn+W = toggle weather simulation mode
                 if (ks.fn && ks.word.size() > 0 && ks.word[0] == 'w') {
                     companion.toggleWeatherSim();
+                    break;
+                }
+                if (ks.fn && ks.word.size() > 0 && ks.word[0] == '1') {
+                    companion.setPromptTestHour(8);
+                    break;
+                }
+                if (ks.fn && ks.word.size() > 0 && ks.word[0] == '2') {
+                    companion.setPromptTestHour(12);
+                    break;
+                }
+                if (ks.fn && ks.word.size() > 0 && ks.word[0] == '3') {
+                    companion.setPromptTestHour(18);
+                    break;
+                }
+                if (ks.fn && ks.word.size() > 0 && ks.word[0] == '4') {
+                    companion.setPromptTestHour(0);
+                    break;
+                }
+                if (ks.fn && ks.word.size() > 0 && ks.word[0] == '5') {
+                    companion.triggerMoodPromptTest();
+                    break;
+                }
+                if (ks.fn && ks.word.size() > 0 && ks.word[0] == '0') {
+                    companion.clearPromptTestHour();
                     break;
                 }
                 // Fn+R = reset config
@@ -308,6 +556,11 @@ void loop() {
                 }
                 if (ks.word.size() > 0 && ks.word[0] == 'o') {
                     companion.startOuting();
+                    break;
+                }
+                if (ks.word.size() > 0 && ks.word[0] == 't') {
+                    if (!townSyncActive) beginTownSync();
+                    else companion.showNotification(u8"\u732b\u54aa", u8"\u5df2\u5728\u57ce\u91cc", u8"\u7b49\u7535\u8111\u5e26\u5b83\u56de\u5bb6");
                     break;
                 }
                 if (ks.word.size() > 0 && ks.word[0] == 'v') {
@@ -415,7 +668,9 @@ void loop() {
 
             // ── Normal keyboard input ──
             if (!voiceInput.isRecording()) {
-                if (ks.ctrl && ks.enter) {
+                if (ks.ctrl && ks.space) {
+                    chat.toggleChineseInput();
+                } else if (ks.ctrl && ks.enter) {
                     toggleAutoSpeak();
                 } else if (tabDown) {
                     playTransition(canvas, false);
@@ -583,7 +838,7 @@ void loop() {
     serialSDSync.tick();
 
     // Broadcast state over UDP for desktop sync (skip if offline or not yet initialized)
-    if (!offlineMode && appMode != AppMode::SETUP) {
+    if (!offlineMode && appMode != AppMode::SETUP && !townSyncActive) {
         const char* modeStr = "COMPANION";
         if (appMode == AppMode::CHAT) modeStr = "CHAT";
         int wType = companion.hasValidWeather() ? static_cast<int>(companion.getWeatherType()) : -1;
@@ -606,6 +861,11 @@ void enterSetupMode() {
     appMode = AppMode::SETUP;
     setupStep = SetupStep::SSID;
     setupInput = "";
+    setupWifiListVisible = false;
+    setupWifiScanning = false;
+    setupWifiResultCount = 0;
+    setupWifiSelectedIndex = 0;
+    setupWifiScrollOffset = 0;
 }
 
 // Helper: get display hint for current value (for setup screen)
@@ -617,6 +877,52 @@ static void getDefaultHint(char* buf, int bufSize, const String& value, bool isP
     } else {
         snprintf(buf, bufSize, "[%s]", value.c_str());
     }
+}
+
+void refreshWifiScanList() {
+    setupWifiScanning = true;
+    setupWifiListVisible = true;
+    setupWifiResultCount = 0;
+    setupWifiSelectedIndex = 0;
+    setupWifiScrollOffset = 0;
+
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect(false, false);
+    int found = WiFi.scanNetworks(false, true);
+    if (found < 0) {
+        setupWifiScanning = false;
+        return;
+    }
+
+    struct ScanEntry {
+        String ssid;
+        int32_t rssi;
+    };
+    ScanEntry entries[MAX_SCAN_RESULTS];
+    int kept = 0;
+
+    for (int i = 0; i < found; i++) {
+        String ssid = WiFi.SSID(i);
+        if (ssid.length() == 0) continue;
+        int32_t rssi = WiFi.RSSI(i);
+
+        int insertAt = kept;
+        while (insertAt > 0 && entries[insertAt - 1].rssi < rssi) {
+            if (insertAt < MAX_SCAN_RESULTS) entries[insertAt] = entries[insertAt - 1];
+            insertAt--;
+        }
+        if (insertAt >= MAX_SCAN_RESULTS) continue;
+        entries[insertAt].ssid = ssid;
+        entries[insertAt].rssi = rssi;
+        if (kept < MAX_SCAN_RESULTS) kept++;
+    }
+
+    for (int i = 0; i < kept; i++) {
+        setupWifiResults[i] = entries[i].ssid;
+    }
+    setupWifiResultCount = kept;
+    WiFi.scanDelete();
+    setupWifiScanning = false;
 }
 
 void updateSetupMode() {
@@ -638,7 +944,48 @@ void updateSetupMode() {
             canvas.drawString((setupInput + "_").c_str(), 10, 42);
             canvas.setTextColor(Color::STATUS_DIM);
             canvas.drawString(u8"[Enter] \u4fdd\u7559/\u786e\u8ba4", 10, 62);
-            canvas.drawString(u8"[Tab] \u53d6\u6d88", 170, 62);
+            canvas.drawString(u8"[Ctrl+S] \u626b\u63cf", 122, 62);
+            canvas.drawString(u8"[Tab] \u53d6\u6d88", 170, 74);
+
+            if (setupWifiListVisible) {
+                const int listX = 10;
+                const int listY = 82;
+                const int listW = 220;
+                const int listH = 44;
+                const int visibleRows = 2;
+                canvas.fillRoundRect(listX, listY, listW, listH, 6, rgb565(245, 239, 226));
+                canvas.drawRoundRect(listX, listY, listW, listH, 6, rgb565(140, 124, 102));
+                canvas.setTextColor(Color::BLACK);
+                canvas.drawString(u8"\u9644\u8fd1 WiFi", listX + 8, listY + 4);
+                canvas.setTextColor(Color::STATUS_DIM);
+                if (setupWifiScanning) {
+                    canvas.drawString(u8"\u626b\u63cf\u4e2d...", listX + 8, listY + 18);
+                } else if (setupWifiResultCount == 0) {
+                    canvas.drawString(u8"\u6ca1\u627e\u5230\u53ef\u7528\u70ed\u70b9", listX + 8, listY + 18);
+                } else {
+                    for (int row = 0; row < visibleRows; row++) {
+                        int itemIndex = setupWifiScrollOffset + row;
+                        if (itemIndex >= setupWifiResultCount) break;
+                        int rowY = listY + 16 + row * 10;
+                        bool selected = (itemIndex == setupWifiSelectedIndex);
+                        if (selected) {
+                            canvas.fillRoundRect(listX + 4, rowY - 1, listW - 8, 9, 3, rgb565(222, 211, 190));
+                            canvas.setTextColor(Color::BLACK);
+                        } else {
+                            canvas.setTextColor(Color::STATUS_DIM);
+                        }
+                        String ssid = setupWifiResults[itemIndex];
+                        if (ssid.length() > 17) ssid = ssid.substring(0, 17) + "...";
+                        canvas.drawString(ssid.c_str(), listX + 8, rowY);
+                    }
+                    canvas.setTextColor(Color::STATUS_DIM);
+                    char pageBuf[16];
+                    snprintf(pageBuf, sizeof(pageBuf), "%d/%d", setupWifiSelectedIndex + 1, setupWifiResultCount);
+                    canvas.drawRightString(pageBuf, listX + listW - 8, listY + 4);
+                }
+                canvas.setTextColor(Color::STATUS_DIM);
+                canvas.drawString(u8"[;/.] \u9009\u62e9 [Enter] \u786e\u8ba4", listX + 8, listY + listH - 10);
+            }
             break;
         case SetupStep::PASSWORD:
             canvas.drawString(u8"WiFi \u5bc6\u7801:", 10, 25);
@@ -689,12 +1036,47 @@ void updateSetupMode() {
     canvas.pushSprite(0, 0);
 }
 
-void handleSetupKey(char key, bool enter, bool backspace, bool tab) {
+void handleSetupKey(char key, bool enter, bool backspace, bool tab, bool ctrl) {
     // Tab = exit setup, go back to companion
     if (tab) {
         if (WiFi.status() != WL_CONNECTED) offlineMode = true;
         enterCompanionMode();
         return;
+    }
+
+    if (setupStep == SetupStep::SSID && ctrl && (key == 's' || key == 'S')) {
+        refreshWifiScanList();
+        return;
+    }
+
+    if (setupStep == SetupStep::SSID && setupWifiListVisible && !setupWifiScanning && setupWifiResultCount > 0) {
+        if (key == ';') {
+            setupWifiSelectedIndex = (setupWifiSelectedIndex + setupWifiResultCount - 1) % setupWifiResultCount;
+            if (setupWifiSelectedIndex < setupWifiScrollOffset) {
+                setupWifiScrollOffset = setupWifiSelectedIndex;
+            }
+            return;
+        }
+        if (key == '.') {
+            setupWifiSelectedIndex = (setupWifiSelectedIndex + 1) % setupWifiResultCount;
+            int visibleRows = 2;
+            if (setupWifiSelectedIndex >= setupWifiScrollOffset + visibleRows) {
+                setupWifiScrollOffset = setupWifiSelectedIndex - visibleRows + 1;
+            }
+            if (setupWifiSelectedIndex == 0) {
+                setupWifiScrollOffset = 0;
+            }
+            return;
+        }
+        if (enter) {
+            setupInput = setupWifiResults[setupWifiSelectedIndex];
+            Config::setSSID(setupInput);
+            setupInput = "";
+            setupWifiListVisible = false;
+            setupWifiScrollOffset = 0;
+            setupStep = SetupStep::PASSWORD;
+            return;
+        }
     }
 
     if (backspace && setupInput.length() > 0) {
@@ -718,6 +1100,7 @@ void handleSetupKey(char key, bool enter, bool backspace, bool tab) {
             // If empty and current SSID is also empty, stay on this step
             if (Config::getSSID().length() == 0) break;
             setupInput = "";
+            setupWifiListVisible = false;
             setupStep = SetupStep::PASSWORD;
             break;
 
@@ -921,6 +1304,22 @@ void initOnlineServices(bool usedSecondary) {
     cmdServer.onNotify([](const char* app, const char* title, const char* body) {
         Serial.printf("[CMD] Notify: [%s] %s - %s\n", app, title, body);
         companion.showNotification(app, title, body);
+    });
+    cmdServer.onHistory([]() -> String {
+        return buildChatHistoryJson();
+    });
+    cmdServer.onSyncEnter([]() -> String {
+        if (!townSyncActive) {
+            return String("{\"ok\":false,\"error\":\"not in town\"}");
+        }
+        renewTownSyncLease();
+        return buildTownSyncSnapshotJson();
+    });
+    cmdServer.onSyncPing([]() -> bool {
+        return renewTownSyncLease();
+    });
+    cmdServer.onSyncLeave([](const String& snapshotJson) -> bool {
+        return applyTownSyncSnapshotJson(snapshotJson);
     });
 }
 

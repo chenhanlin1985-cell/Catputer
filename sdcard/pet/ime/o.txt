@@ -1,0 +1,3 @@
+# Catputer IME bucket
+o=哦
+ou=欧,偶,哦

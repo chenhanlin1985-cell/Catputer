@@ -1,0 +1,4 @@
+# Catputer IME bucket
+e=饿,额,恶
+en=嗯,恩
+er=二,而,儿,耳

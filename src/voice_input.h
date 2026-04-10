@@ -50,6 +50,7 @@ private:
     void deinitMic();
     bool allocBuffer();
     void freeBuffer();
+    bool hasMeaningfulAudio(const int16_t* data, size_t sampleCount) const;
     String sendToSTT(const int16_t* data, size_t sampleCount);
     void writeWavHeader(uint8_t* header, uint32_t dataSize);
 };

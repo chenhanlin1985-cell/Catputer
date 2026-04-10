@@ -16,3 +16,7 @@ tools/__pycache__/
 openclaw-token.txt
 qwen-test.json
 sse-test-body.json
+Godot/
+desktop/CatputerGodot/.godot/
+desktop/CatputerGodot/**/*.import
+desktop/CatputerGodot/**/*.uid

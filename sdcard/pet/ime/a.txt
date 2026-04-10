@@ -1,0 +1,5 @@
+# Catputer IME bucket
+a=啊,阿,呵,吖
+ai=爱,矮,哎,唉,碍,艾,挨,癌
+an=安,按,案,暗
+ang=昂

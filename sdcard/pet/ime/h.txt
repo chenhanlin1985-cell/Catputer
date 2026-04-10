@@ -1,0 +1,23 @@
+# Catputer IME bucket
+ha=哈
+hai=还,海,害,孩
+han=喊,汉,含,汗,寒
+hang=行,航,巷
+hao=好,号,浩,豪,毫,郝,耗,皓,昊,灏
+he=和,喝,合,河,何,核,赫,荷,贺,盒
+hei=黑
+hen=很,狠
+heng=横,哼
+hong=红,洪,宏,轰
+hou=后,候,厚,猴
+hu=胡,护,湖,互,呼
+hua=话,花,化,画,华
+huai=坏,怀
+huan=换,还,环,欢,缓
+huang=黄,慌,皇,荒
+hui=会,回,灰,挥,汇,惠,慧,毁,悔,辉
+hun=混,婚,魂
+huo=或,活,火,货,获
+huijia=回家
+houxuan=候选
+haode=好的

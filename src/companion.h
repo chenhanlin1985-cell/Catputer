@@ -18,6 +18,16 @@ enum class AccessoryType : uint8_t {
     NONE, SUNGLASSES, UMBRELLA, SNOW_HAT, MASK
 };
 
+enum class PromptSlot : int8_t {
+    NONE = -1,
+    MORNING = 0,
+    BREAKFAST = 1,
+    LUNCH = 2,
+    DINNER = 3,
+    LATE_NIGHT = 4,
+    RANDOM_MOOD = 5
+};
+
 class Companion {
 public:
     void begin(M5Canvas& canvas);
@@ -40,11 +50,25 @@ public:
     void toggleWeatherSim();
     void setSimWeatherType(int index); // 1-8
     bool isWeatherSimMode() const { return weatherSimMode; }
+    void setPromptTestHour(int hour);
+    void clearPromptTestHour();
     uint8_t getFullness() const { return fullness; }
     uint8_t getMood() const { return mood; }
     uint8_t getEnergy() const { return energy; }
     uint8_t getCleanliness() const { return cleanliness; }
     uint8_t getBond() const { return bond; }
+    const String& getPetId() const { return petId; }
+    const String& getPetName() const { return petName; }
+    const String& getPetKind() const { return petKind; }
+    const String& getPetPersonality() const { return petPersonality; }
+    int getX() const { return charX; }
+    int getY() const { return charY; }
+    bool isSleeping() const { return state == CompanionState::SLEEP; }
+    bool isOuting() const { return outingActive; }
+    bool isTownSyncActive() const { return townSyncActive; }
+    uint8_t getSouvenirCount() const { return souvenirCount; }
+    const char* getSouvenirItem(uint8_t index) const;
+    const char* getSouvenirNote(uint8_t index) const;
     void feed();
     void play();
     void nap();
@@ -54,6 +78,23 @@ public:
     void showSouvenirs();
     void showActionHelp(unsigned long durationMs = 4000);
     void toggleStatsPanel();
+    bool handlePromptKey(char key, bool enter, bool backspace, bool tab = false);
+    bool hasActivePrompt() const { return activePromptSlot != PromptSlot::NONE; }
+    bool isPromptTextEntryActive() const { return promptTextEntryActive; }
+    void triggerMoodPromptTest();
+    void setTownSyncActive(bool active);
+    void applySyncSnapshot(uint8_t newFullness, uint8_t newMood, uint8_t newEnergy,
+                           uint8_t newCleanliness, uint8_t newBond, int newX, int newY,
+                           bool newFacingLeft, bool sleeping, const char* status,
+                           const char* newPetId, const char* newPetName, const char* newPetKind,
+                           const char* newPetPersonality);
+    void replaceSouvenirs(const char items[][PetStorage::SOUVENIR_ITEM_LEN],
+                          const char notes[][PetStorage::SOUVENIR_NOTE_LEN],
+                          uint8_t count);
+    void exportPromptMemory(int askedDayStamp[PetStorage::PROMPT_SLOT_COUNT],
+                            char replies[PetStorage::PROMPT_SLOT_COUNT][PetStorage::PROMPT_REPLY_LEN]);
+    void importPromptMemory(const int askedDayStamp[PetStorage::PROMPT_SLOT_COUNT],
+                            const char replies[PetStorage::PROMPT_SLOT_COUNT][PetStorage::PROMPT_REPLY_LEN]);
 
     CompanionState getState() const { return state; }
     WeatherType getWeatherType() const { return weather.type; }
@@ -85,6 +126,8 @@ private:
     Timer clockTimer{1000};
     Timer spontaneousTimer{8000};  // random actions every 8-15s
     unsigned long stateStartTime = 0;
+    int lastKnownHour = 20;
+    int promptTestHour = -1;
 
     // Star twinkling
     struct Star { int x, y; bool visible; };
@@ -110,6 +153,7 @@ private:
     void drawQuickHint(M5Canvas& canvas);
     void drawToyGame(M5Canvas& canvas);
     void drawOutingScene(M5Canvas& canvas);
+    void drawTownSyncScene(M5Canvas& canvas);
     void drawSouvenirViewer(M5Canvas& canvas);
     void drawDayElements(M5Canvas& canvas);
     void drawAccessory(M5Canvas& canvas, int charDrawX, int charDrawY);
@@ -125,11 +169,30 @@ private:
     void loadSouvenirs();
     void pushSouvenir(const char* item, const char* note);
     void updatePetNeeds();
+    void updateScheduledPrompt();
     void updateToyGame();
     void updateOuting();
+    void loadPromptMemory();
+    void savePromptMemory();
     void markPetProgressDirty();
     void setTemporaryStatus(const char* text, unsigned long durationMs = 2200);
     void placeToyTarget();
+    const char* affectionLabel() const;
+    String normalizePersonality(const String& value) const;
+    const char* personalityAmbient(const char* category) const;
+    void maybePromptOnInteraction();
+    void triggerScheduledPrompt(PromptSlot slot);
+    void answerScheduledPrompt(const char* replyText, bool customReply, const char* feedbackText = nullptr);
+    void respondToPromptChoice(int choiceIndex);
+    int currentDayStamp() const;
+    bool canTriggerPrompt(PromptSlot slot, int dayStamp) const;
+    const char* promptSlotQuestion(PromptSlot slot) const;
+    const char* const* promptSlotChoices(PromptSlot slot) const;
+    const char* promptSlotRecallQuestion(PromptSlot slot) const;
+    const char* classifyPromptReply(PromptSlot slot, const char* replyText) const;
+    const char* recentMemoryAmbient(const char* category) const;
+    void drawPromptCard(M5Canvas& canvas);
+    const char* promptSlotMemoryKey(PromptSlot slot) const;
 
     // Weather simulation
     bool weatherSimMode = false;
@@ -162,6 +225,10 @@ private:
     uint8_t energy = 80;
     uint8_t cleanliness = 78;
     uint8_t bond = 35;
+    String petId = "";
+    String petName = "小橘";
+    String petKind = "orange";
+    String petPersonality = "lively";
     Timer fullnessDecayTimer{300000}; // 5 min
     Timer moodDecayTimer{420000};     // 7 min
     Timer energyDecayTimer{480000};   // 8 min
@@ -171,12 +238,16 @@ private:
     Timer petSaveTimer{15000};        // batch writes to NVS
     unsigned long temporaryStatusUntil = 0;
     char temporaryStatus[24] = "";
+    unsigned long ambientStatusUntil = 0;
+    char ambientStatus[48] = "";
+    char ambientStatusCategory[16] = "";
     bool toyGameActive = false;
     uint8_t toyCatchCount = 0;
     unsigned long toyGameEndsAt = 0;
     int toyTargetX = 0;
     int toyTargetY = 0;
     bool outingActive = false;
+    bool townSyncActive = false;
     unsigned long outingEndsAt = 0;
     unsigned long lastOutingTime = 0;
     char lastOutingFind[64] = "";
@@ -192,6 +263,13 @@ private:
     unsigned long actionHelpUntil = 0;
     bool statsPanelVisible = false;
     bool helpPanelVisible = false;
+    bool promptMemoryLoaded = false;
+    Timer promptTimer{15000};
+    PromptSlot activePromptSlot = PromptSlot::NONE;
+    bool promptTextEntryActive = false;
+    int promptAskedDayStamp[PetStorage::PROMPT_SLOT_COUNT] = {-1, -1, -1, -1, -1};
+    char promptReplies[PetStorage::PROMPT_SLOT_COUNT][PetStorage::PROMPT_REPLY_LEN] = {{0}};
+    char promptInput[PetStorage::PROMPT_REPLY_LEN] = "";
 
     // Draw a sprite with transparency (flip=true for horizontal mirror)
     void drawSprite16(M5Canvas& canvas, int x, int y, const uint16_t* data, bool flip = false);

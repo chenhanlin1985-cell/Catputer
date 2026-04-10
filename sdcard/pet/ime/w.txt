@@ -1,0 +1,22 @@
+# Catputer IME bucket
+wa=哇,娃,瓦
+wai=外,歪
+wan=玩,完,晚,万,湾
+wang=往,王,网,忘,望
+wei=为,位,未,委,味
+wen=问,文,闻,稳,温,吻,纹,蚊,雯
+weng=翁
+wo=我,握,窝,卧,沃,蜗,斡
+wu=无,五,物,务,误
+woshi=我是
+wode=我的
+women=我们
+wozai=我在
+woyao=我要
+woxiang=我想
+wobu=我不
+woaini=我爱你
+weishenme=为什么
+waichu=外出
+weishi=喂食
+wanle=玩乐

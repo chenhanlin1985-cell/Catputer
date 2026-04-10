@@ -1,0 +1,21 @@
+# Catputer IME bucket
+pa=怕,爬,帕
+pai=派,排,拍,牌
+pan=盘,判,盼,攀
+pang=旁,胖
+pao=跑,泡,炮,抛
+pei=陪,配,培,赔
+pen=喷,盆
+peng=朋,碰,棚,鹏
+pi=皮,批,屁,疲,披
+pian=片,篇,偏,骗
+piao=票,漂,飘
+pie=撇
+pin=品,拼,贫
+ping=平,评,凭,屏,瓶
+po=破,坡,泼,迫
+pou=剖
+pu=普,铺,谱,扑
+pinyin=拼音
+peiwo=陪我
+peini=陪你

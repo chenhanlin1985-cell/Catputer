@@ -1,0 +1,22 @@
+# Catputer IME bucket
+ga=嘎
+gai=该,改,盖
+gan=干,感,敢,赶,甘
+gang=刚,港,钢,纲
+gao=高,告,搞,稿
+ge=个,各,歌,格,哥,割,隔,革,阁,葛
+gei=给
+gen=跟,根
+geng=更,耕
+gong=工,公,共,功,供
+gou=够,狗,沟,购
+gu=古,故,顾,鼓,骨
+gua=挂,刮
+guai=怪,拐
+guan=关,管,官,馆,观
+guang=光,广,逛
+gui=归,贵,鬼,桂,规
+gun=滚,棍
+guo=过,国,果,锅,郭
+guangzhou=广州
+gaoxing=高兴

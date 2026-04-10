@@ -2,14 +2,12 @@
 
 [English](README.md)
 
-这是一个运行在 `M5Stack Cardputer / Cardputer Adv` 上的小橘猫口袋宠物项目。
-
-当前版本已经从早期的实验性聊天壳，整理成了更接近成品的小橘猫设备：
+`Catputer` 是运行在 `M5Stack Cardputer / Cardputer Adv` 上的小猫口袋宠物项目。当前版本已经从早期实验性聊天终端，整理成了更接近成品的离线宠物设备：
 
 - 离线也能玩
 - 联网后更聪明
 - 中文优先
-- 支持语音输入和朗读
+- 支持语音输入与朗读
 - 支持外出、纪念盒、照片和成长记录
 
 ## 主要功能
@@ -80,7 +78,7 @@
 pio run -t upload
 ```
 
-Windows 可以直接用脚本：
+Windows 可直接用脚本：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\windows\flash.ps1 -Port COM5
@@ -88,8 +86,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows\flash.ps1 -Port COM5
 
 ### 3. 启动本地语音服务
 
-如果只用文字聊天，这一步不是必须的。
-
+如果只用文字聊天，这一步不是必须。
 如果要语音输入或朗读：
 
 ```bash
@@ -114,10 +111,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows\start-stt-proxy.ps1
 - `c`：清理
 - `g`：迷你游戏
 - `o`：外出
-- `v`：查看纪念盒
-- `h`：打开帮助面板
-- `i`：打开状态面板
-- `Fn + , / Fn + .`：调节音量
+- `v`：纪念盒
+- `h`：帮助面板
+- `i`：状态面板
+- `Fn + , / Fn + .`：调整音量
 - `Fn + R`：重置配置
 
 ### 聊天界面
@@ -149,6 +146,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows\start-stt-proxy.ps1
 - 纪念盒优先写到 `/pet/souvenirs.txt`
 - 事件日志写到 `/pet/events.log`
 - 外出照片从 `/pet/photos/` 读取
+- 对话资源和输入法词库也可以放在 SD 卡上
 
 如果没有 SD 卡，核心存档会退回到 NVS。
 
@@ -156,4 +154,4 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows\start-stt-proxy.ps1
 
 - 不要提交真实的 Wi-Fi、API key 或其他个人配置
 - 请使用示例配置文件作为模板
-- 本地日志、测试请求和个人辅助文件已经默认忽略
+- 本地日志、构建缓存和个人辅助文件都应保持忽略

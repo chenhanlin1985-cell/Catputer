@@ -1,0 +1,21 @@
+# Catputer IME bucket
+ka=卡
+kai=开,凯,慨,揩,楷
+kan=看,砍,刊,堪,勘,坎,槛,嵌
+kang=康,扛
+kao=考,靠,烤
+ke=可,科,课,客,刻
+ken=肯,啃
+keng=坑
+kong=空,孔,控,恐
+kou=口,扣,寇
+ku=哭,苦,库
+kua=夸,跨
+kuai=快,块,筷
+kuan=宽,款
+kuang=况,矿,狂,框
+kui=亏,愧,魁
+kun=困,昆
+kuo=扩,阔
+keyi=可以
+kaixin=开心

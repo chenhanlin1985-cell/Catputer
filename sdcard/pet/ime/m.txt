@@ -1,0 +1,23 @@
+# Catputer IME bucket
+ma=吗,妈,马,嘛,麻,码,玛,骂,蚂,抹
+mai=买,卖,麦,迈
+man=满,慢,蛮,曼
+mang=忙,芒,盲
+mao=猫,毛,帽,冒,贸
+me=么
+mei=没,美,每,妹,梅
+men=们,门,闷
+meng=梦,猛,蒙,萌,盟,孟,朦
+mi=米,密,迷,秘,谜
+mian=面,免,棉,眠
+miao=秒,妙,苗,描
+mie=灭
+min=民,敏,闵
+ming=明,名,命,鸣,铭,冥,茗
+miu=谬
+mo=摸,没,末,莫,默
+mou=某,谋
+mu=木,母,目,幕
+mingtian=明天
+maomi=猫咪
+meiguanxi=没关系

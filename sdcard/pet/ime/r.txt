@@ -1,0 +1,15 @@
+# Catputer IME bucket
+ran=然,燃
+rang=让,嚷
+rao=绕,扰
+re=热
+ren=人,认,任,忍,仁,韧,刃,壬
+reng=仍,扔
+ri=日
+rong=容,融,荣,溶
+rou=肉,柔
+ru=如,入,乳
+ruan=软
+rui=瑞,锐
+run=润
+ruo=若,弱

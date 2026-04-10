@@ -17,10 +17,14 @@ namespace {
     const char* PET_DIR = "/pet";
     const char* SOUVENIRS_FILE = "/pet/souvenirs.txt";
     const char* EVENTS_FILE = "/pet/events.log";
+    const char* MEMORY_DIR = "/pet/memory";
 
     void ensureDir() {
         if (!SD.exists(PET_DIR)) {
             SD.mkdir(PET_DIR);
+        }
+        if (!SD.exists(MEMORY_DIR)) {
+            SD.mkdir(MEMORY_DIR);
         }
     }
 
@@ -44,6 +48,26 @@ namespace {
             return String(buf);
         }
         return String(millis());
+    }
+
+    String sanitizePetId(const char* petId) {
+        String out = petId ? petId : "";
+        if (out.length() == 0) out = "device-cat";
+        for (size_t i = 0; i < out.length(); i++) {
+            char ch = out[i];
+            bool safe = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                        (ch >= '0' && ch <= '9') || ch == '-' || ch == '_';
+            if (!safe) out.setCharAt(i, '_');
+        }
+        return out;
+    }
+
+    String memoryPathForPet(const char* petId) {
+        return String(MEMORY_DIR) + "/" + sanitizePetId(petId) + ".txt";
+    }
+
+    String memoryLogPathForPet(const char* petId) {
+        return String(MEMORY_DIR) + "/" + sanitizePetId(petId) + ".log";
     }
 }
 
@@ -147,4 +171,111 @@ bool PetStorage::appendEventLog(const char* eventType, const char* detail) {
     file.print('\n');
     file.close();
     return true;
+}
+
+bool PetStorage::loadPromptMemory(const char* petId, int askedDayStamp[PROMPT_SLOT_COUNT], char replies[PROMPT_SLOT_COUNT][PROMPT_REPLY_LEN]) {
+    for (uint8_t i = 0; i < PROMPT_SLOT_COUNT; i++) {
+        askedDayStamp[i] = -1;
+        replies[i][0] = '\0';
+    }
+    if (!sdReady) return false;
+
+    String path = memoryPathForPet(petId);
+    if (!SD.exists(path)) return false;
+
+    File file = SD.open(path, FILE_READ);
+    if (!file) return false;
+
+    while (file.available()) {
+        String line = file.readStringUntil('\n');
+        line.trim();
+        if (line.length() == 0 || line.startsWith("#")) continue;
+        int first = line.indexOf('\t');
+        int second = first >= 0 ? line.indexOf('\t', first + 1) : -1;
+        if (first <= 0 || second <= first) continue;
+
+        int slot = line.substring(0, first).toInt();
+        if (slot < 0 || slot >= PROMPT_SLOT_COUNT) continue;
+        askedDayStamp[slot] = line.substring(first + 1, second).toInt();
+        copyField(replies[slot], PROMPT_REPLY_LEN, line.substring(second + 1));
+    }
+
+    file.close();
+    return true;
+}
+
+bool PetStorage::savePromptMemory(const char* petId, const int askedDayStamp[PROMPT_SLOT_COUNT], const char replies[PROMPT_SLOT_COUNT][PROMPT_REPLY_LEN]) {
+    if (!sdReady) return false;
+    ensureDir();
+
+    String path = memoryPathForPet(petId);
+    if (SD.exists(path)) {
+        SD.remove(path);
+    }
+    File file = SD.open(path, FILE_WRITE);
+    if (!file) return false;
+
+    for (uint8_t i = 0; i < PROMPT_SLOT_COUNT; i++) {
+        file.print(i);
+        file.print('\t');
+        file.print(askedDayStamp[i]);
+        file.print('\t');
+        file.print(replies[i]);
+        file.print('\n');
+    }
+
+    file.close();
+    return true;
+}
+
+bool PetStorage::appendPetMemoryEvent(const char* petId, const char* eventType, const char* detail) {
+    if (!sdReady) return false;
+    ensureDir();
+
+    String path = memoryLogPathForPet(petId);
+    File file = SD.open(path, FILE_APPEND);
+    if (!file) return false;
+
+    String ts = makeTimestamp();
+    file.print(ts);
+    file.print(" | ");
+    file.print(eventType ? eventType : "memory");
+    file.print(" | ");
+    file.print(detail ? detail : "");
+    file.print('\n');
+    file.close();
+    return true;
+}
+
+bool PetStorage::loadRecentPetMemoryEvents(const char* petId, char lines[][96], uint8_t& count, uint8_t maxCount) {
+    count = 0;
+    if (!sdReady) return false;
+
+    String path = memoryLogPathForPet(petId);
+    if (!SD.exists(path)) return false;
+
+    File file = SD.open(path, FILE_READ);
+    if (!file) return false;
+
+    static constexpr uint8_t kMaxBuffer = 12;
+    String recent[kMaxBuffer];
+    uint8_t seen = 0;
+    while (file.available()) {
+        String line = file.readStringUntil('\n');
+        line.trim();
+        if (line.length() == 0) continue;
+        recent[seen % kMaxBuffer] = line;
+        seen++;
+    }
+    file.close();
+
+    uint8_t available = seen < kMaxBuffer ? seen : kMaxBuffer;
+    if (available == 0) return false;
+    uint8_t start = seen > available ? (seen - available) : 0;
+    for (uint8_t i = 0; i < available && count < maxCount; i++) {
+        uint8_t idx = (start + i) % kMaxBuffer;
+        copyField(lines[count], 96, recent[idx]);
+        count++;
+    }
+    return count > 0;
 }

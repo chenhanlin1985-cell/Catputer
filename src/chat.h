@@ -1,6 +1,7 @@
 #pragma once
 #include <M5Cardputer.h>
 #include "utils.h"
+#include "ime_dict.h"
 
 // ── Pixel Art 16-color palette (RGB565, PROGMEM) ──
 // 0=transparent 1=black 2=white 3=red 4=darkred 5=orange 6=yellow 7=green
@@ -31,6 +32,7 @@ public:
     void handleKey(char key);
     void handleEnter();
     void handleBackspace();
+    void toggleChineseInput();
     void scrollUp();
     void scrollDown();
 
@@ -54,6 +56,9 @@ public:
 
     // Get the last message (for desktop sync)
     int getMessageCount() const { return messageCount; }
+    bool getMessageAt(int logicalIndex, String& text, bool& isUser) const;
+    void clearMessages();
+    void importMessage(const String& text, bool isUser);
 
     // Check if pixel art was just parsed (cleared after reading)
     bool hasNewPixelArt() const { return newPixelArt; }
@@ -95,6 +100,13 @@ private:
     bool userScrolled = false; // user manually scrolled up
 
     bool aiThinking = false;
+    bool chineseInputMode = false;
+    String pinyinBuffer;
+    static constexpr int MAX_IME_CANDIDATES = ImeDict::MAX_CANDIDATES;
+    static constexpr int IME_PAGE_SIZE = 5;
+    String imeCandidates[MAX_IME_CANDIDATES];
+    int imeCandidateCount = 0;
+    int imePageStart = 0;
 
     // /draw command state
     bool drawMode = false;
@@ -103,6 +115,9 @@ private:
 
     void drawMessages(M5Canvas& canvas);
     void drawInputBar(M5Canvas& canvas);
+    void refreshImeCandidates();
+    bool commitImeCandidate(int index);
+    void pageImeCandidates(int delta);
     void addMessage(const String& text, bool isUser);
     void scrollToBottom();
     int calcMessageHeight(M5Canvas& canvas, const Message& msg);
@@ -111,4 +126,5 @@ private:
     // Pixel art support
     void parsePixelArtResponse(int msgIdx);
     void drawPixelArt(M5Canvas& canvas, const Message& msg, int x, int y);
+    void ensureStorage();
 };

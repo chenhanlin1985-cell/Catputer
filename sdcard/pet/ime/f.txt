@@ -1,0 +1,10 @@
+# Catputer IME bucket
+fa=发,法,罚,乏
+fan=反,饭,翻,烦,凡
+fang=方,放,房,防,访
+fei=非,飞,肥,费,废
+fen=分,份,粉,奋,纷
+feng=风,封,丰,峰,疯
+fo=佛
+fou=否
+fu=复,服,福,富,父

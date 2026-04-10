@@ -1,0 +1,24 @@
+# Catputer IME bucket
+da=大,达,打,答
+dai=带,代,待,戴,袋
+dan=但,单,蛋,担,淡
+dang=当,党,档
+dao=到,道,导,倒,刀
+de=的,得,地,德,底,灯
+dei=得
+deng=等,灯,登,邓
+di=地,第,低,提,底
+dia=嗲
+dian=点,电,店,典,垫
+diao=掉,调,雕,钓
+die=爹,叠,跌
+ding=定,顶,盯,丁,订
+diu=丢
+dong=动,东,懂,冬,洞
+dou=都,斗,豆,逗
+du=度,都,读,独,毒
+duan=段,短,端
+dui=对,队,堆
+dun=顿,盾,蹲
+duo=多,朵,躲,夺
+duibuqi=对不起

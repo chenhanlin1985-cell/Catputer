@@ -21,6 +21,10 @@ static uint8_t petMood = 70;
 static uint8_t petEnergy = 80;
 static uint8_t petCleanliness = 78;
 static uint8_t petBond = 35;
+static String petId;
+static String petName;
+static String petKind;
+static String petPersonality;
 static String souvenirSlots[3];
 static String souvenirNoteSlots[3];
 static uint8_t souvenirCount = 0;
@@ -46,6 +50,10 @@ bool Config::load() {
     petEnergy = prefs.getUChar("pet_energy", 80);
     petCleanliness = prefs.getUChar("pet_clean", 78);
     petBond = prefs.getUChar("pet_bond", 35);
+    petId = prefs.getString("pet_id", "");
+    petName = prefs.getString("pet_name", "小橘");
+    petKind = prefs.getString("pet_kind", "orange");
+    petPersonality = prefs.getString("pet_persona", "lively");
     souvenirSlots[0] = prefs.getString("sv_0", "");
     souvenirSlots[1] = prefs.getString("sv_1", "");
     souvenirSlots[2] = prefs.getString("sv_2", "");
@@ -78,6 +86,10 @@ void Config::save() {
     prefs.putUChar("pet_energy", petEnergy);
     prefs.putUChar("pet_clean", petCleanliness);
     prefs.putUChar("pet_bond", petBond);
+    prefs.putString("pet_id", petId);
+    prefs.putString("pet_name", petName);
+    prefs.putString("pet_kind", petKind);
+    prefs.putString("pet_persona", petPersonality);
     prefs.putString("sv_0", souvenirSlots[0]);
     prefs.putString("sv_1", souvenirSlots[1]);
     prefs.putString("sv_2", souvenirSlots[2]);
@@ -111,6 +123,10 @@ void Config::reset() {
     petEnergy = 80;
     petCleanliness = 78;
     petBond = 35;
+    petId = "";
+    petName = "小橘";
+    petKind = "orange";
+    petPersonality = "lively";
     souvenirSlots[0] = "";
     souvenirSlots[1] = "";
     souvenirSlots[2] = "";
@@ -139,6 +155,10 @@ uint8_t Config::getPetMood() { return petMood; }
 uint8_t Config::getPetEnergy() { return petEnergy; }
 uint8_t Config::getPetCleanliness() { return petCleanliness; }
 uint8_t Config::getPetBond() { return petBond; }
+const String& Config::getPetId() { return petId; }
+const String& Config::getPetName() { return petName; }
+const String& Config::getPetKind() { return petKind; }
+const String& Config::getPetPersonality() { return petPersonality; }
 const String& Config::getSouvenirSlot(uint8_t index) {
     static String empty = "";
     if (index >= 3) return empty;
@@ -170,6 +190,10 @@ void Config::setPetMood(uint8_t v) { petMood = v; }
 void Config::setPetEnergy(uint8_t v) { petEnergy = v; }
 void Config::setPetCleanliness(uint8_t v) { petCleanliness = v; }
 void Config::setPetBond(uint8_t v) { petBond = v; }
+void Config::setPetId(const String& value) { petId = value; }
+void Config::setPetName(const String& value) { petName = value; }
+void Config::setPetKind(const String& value) { petKind = value; }
+void Config::setPetPersonality(const String& value) { petPersonality = value; }
 void Config::setSouvenirSlot(uint8_t index, const String& value) {
     if (index >= 3) return;
     souvenirSlots[index] = value;

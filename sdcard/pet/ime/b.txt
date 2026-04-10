@@ -1,0 +1,19 @@
+# Catputer IME bucket
+ba=把,吧,八,爸,拔,巴,罢,霸,坝,芭
+bai=百,白,摆,败
+ban=办,半,班,般,版
+bang=帮,棒,旁,绑
+bao=包,报,抱,宝,保
+bei=被,北,倍,备,背
+ben=本,笨
+beng=崩
+bi=比,必,笔,避,闭
+bian=边,变,便,遍,编
+biao=表,标,飙
+bie=别,憋
+bin=宾
+bing=并,病,冰,兵,饼
+bo=播,波,博,伯,拨
+bu=不,步,布,补,部
+beijing=北京
+bukeyi=不可以

@@ -13,6 +13,9 @@ public:
     using TextCallback = std::function<void(const char* text, bool autoSend)>;  // text input (autoSend=true for "say")
     using NotifyCallback = std::function<void(const char* app, const char* title, const char* body)>;
     using HistoryCallback = std::function<String()>;  // returns JSON array of chat messages
+    using SyncEnterCallback = std::function<String()>;               // returns snapshot JSON
+    using SyncPingCallback = std::function<bool()>;                  // renew active town-sync lease
+    using SyncLeaveCallback = std::function<bool(const String&)>;    // apply snapshot JSON
 
     void begin();
     void tick();  // Call from main loop — non-blocking
@@ -22,17 +25,23 @@ public:
     void onText(TextCallback cb) { textCb = cb; }
     void onNotify(NotifyCallback cb) { notifyCb = cb; }
     void onHistory(HistoryCallback cb) { historyCb = cb; }
+    void onSyncEnter(SyncEnterCallback cb) { syncEnterCb = cb; }
+    void onSyncPing(SyncPingCallback cb) { syncPingCb = cb; }
+    void onSyncLeave(SyncLeaveCallback cb) { syncLeaveCb = cb; }
 
     static constexpr uint16_t CMD_PORT = 19821;      // TCP
     static constexpr uint16_t CMD_UDP_PORT = 19822;   // UDP
 
 private:
-    static constexpr int BUF_SIZE = 384;
+    static constexpr int BUF_SIZE = 4096;
 
     AnimateCallback animateCb;
     TextCallback textCb;
     NotifyCallback notifyCb;
     HistoryCallback historyCb;
+    SyncEnterCallback syncEnterCb;
+    SyncPingCallback syncPingCb;
+    SyncLeaveCallback syncLeaveCb;
 
     bool started = false;
 

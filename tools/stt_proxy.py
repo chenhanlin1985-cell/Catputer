@@ -13,9 +13,12 @@ Listens on port 8090 by default (change with STT_PROXY_PORT env var).
 
 import json
 import os
+import shutil
 import sys
 import subprocess
 import tempfile
+import wave
+import audioop
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 # Load .env file if present
@@ -82,9 +85,15 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 pcm_path = pcm_f.name
 
             try:
-                # Run edge-tts to produce MP3
+                # Prefer module invocation so we don't depend on a PATH shim.
+                edge_tts_cmd = None
+                if shutil.which("edge-tts"):
+                    edge_tts_cmd = ["edge-tts"]
+                else:
+                    edge_tts_cmd = [sys.executable, "-m", "edge_tts"]
+
                 result = subprocess.run(
-                    ["edge-tts", "--voice", voice, "--text", text, "--write-media", mp3_path],
+                    edge_tts_cmd + ["--voice", voice, "--text", text, "--write-media", mp3_path],
                     capture_output=True, timeout=30,
                 )
                 if result.returncode != 0:
@@ -97,21 +106,35 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         self.wfile.write(f'{{"error":"edge-tts failed: {err}"}}'.encode())
                         return
                 else:
-                    # Convert MP3 -> raw PCM (signed 16-bit LE, 8kHz, mono)
-                    result = subprocess.run(
-                        ["ffmpeg", "-y", "-i", mp3_path,
-                         "-f", "s16le", "-acodec", "pcm_s16le",
-                         "-ar", "8000", "-ac", "1", pcm_path],
-                        capture_output=True, timeout=30,
-                    )
-                    if result.returncode != 0:
-                        err = result.stderr.decode(errors="replace")[:200]
-                        print(f"  [TTS] ffmpeg failed: {err}")
-                        self.send_response(500)
-                        self.send_header("Content-Type", "application/json")
-                        self.end_headers()
-                        self.wfile.write(f'{{"error":"ffmpeg failed: {err}"}}'.encode())
-                        return
+                    ffmpeg_cmd = None
+                    if shutil.which("ffmpeg"):
+                        ffmpeg_cmd = ["ffmpeg"]
+                    elif os.environ.get("FFMPEG_BIN") and shutil.which(os.path.join(os.environ["FFMPEG_BIN"], "ffmpeg.exe")):
+                        ffmpeg_cmd = [os.path.join(os.environ["FFMPEG_BIN"], "ffmpeg.exe")]
+
+                    if ffmpeg_cmd is None:
+                        print("  [TTS] ffmpeg missing, falling back to Windows voice")
+                        if not synthesize_with_windows_tts(text, pcm_path):
+                            self.send_response(500)
+                            self.send_header("Content-Type", "application/json")
+                            self.end_headers()
+                            self.wfile.write(b'{"error":"ffmpeg missing and windows tts fallback failed"}')
+                            return
+                    else:
+                        result = subprocess.run(
+                            ffmpeg_cmd + ["-y", "-i", mp3_path,
+                            "-f", "s16le", "-acodec", "pcm_s16le",
+                            "-ar", "8000", "-ac", "1", pcm_path],
+                            capture_output=True, timeout=30,
+                        )
+                        if result.returncode != 0:
+                            err = result.stderr.decode(errors="replace")[:200]
+                            print(f"  [TTS] ffmpeg failed: {err}")
+                            self.send_response(500)
+                            self.send_header("Content-Type", "application/json")
+                            self.end_headers()
+                            self.wfile.write(f'{{"error":"ffmpeg failed: {err}"}}'.encode())
+                            return
 
                 with open(pcm_path, "rb") as f:
                     pcm_data = f.read()
@@ -151,6 +174,24 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(b'{"error":"invalid JSON"}')
+        except FileNotFoundError as e:
+            print(f"  [TTS] dependency missing: {e}")
+            try:
+                if synthesize_with_windows_tts(text, pcm_path):
+                    with open(pcm_path, "rb") as f:
+                        pcm_data = f.read()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Length", str(len(pcm_data)))
+                    self.end_headers()
+                    self.wfile.write(pcm_data)
+                    return
+            except Exception:
+                pass
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"error":"edge-tts missing"}')
         except Exception as e:
             print(f"  [TTS] Error: {e}")
             self.send_response(500)
@@ -225,7 +266,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
 
 def synthesize_with_windows_tts(text: str, pcm_path: str) -> bool:
-    """Fallback TTS using Windows SAPI voice, then ffmpeg -> 8kHz PCM."""
+    """Fallback TTS using Windows SAPI voice, then Python converts WAV -> 8kHz PCM."""
     with tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="w", encoding="utf-8") as text_f:
         text_f.write(text)
         text_path = text_f.name
@@ -255,16 +296,24 @@ def synthesize_with_windows_tts(text: str, pcm_path: str) -> bool:
             print(f"  [TTS] Windows TTS failed: {err}")
             return False
 
-        result = subprocess.run(
-            ["ffmpeg", "-y", "-i", wav_path,
-             "-f", "s16le", "-acodec", "pcm_s16le",
-             "-ar", "8000", "-ac", "1", pcm_path],
-            capture_output=True, timeout=30,
-        )
-        if result.returncode != 0:
-            err = result.stderr.decode(errors="replace")[:200]
-            print(f"  [TTS] Windows ffmpeg failed: {err}")
+        with wave.open(wav_path, "rb") as wf:
+            nchannels = wf.getnchannels()
+            sampwidth = wf.getsampwidth()
+            framerate = wf.getframerate()
+            frames = wf.readframes(wf.getnframes())
+
+        if sampwidth != 2:
+            print(f"  [TTS] Unsupported WAV sample width: {sampwidth}")
             return False
+
+        if nchannels > 1:
+            frames = audioop.tomono(frames, sampwidth, 0.5, 0.5)
+
+        if framerate != 8000:
+            frames, _ = audioop.ratecv(frames, sampwidth, 1, framerate, 8000, None)
+
+        with open(pcm_path, "wb") as pcm_f:
+            pcm_f.write(frames)
 
         print("  [TTS] Fallback to Windows voice succeeded")
         return True
