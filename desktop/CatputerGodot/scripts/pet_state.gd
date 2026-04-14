@@ -174,6 +174,8 @@ var pet_name: String = "小橘"
 var pet_kind: String = "orange"
 var personality: String = PERSONALITY_LIVELY
 var care_tendency: String = CARE_TENDENCY_BALANCED
+var assigned_device_id: String = ""
+var runtime_location: String = "pc"
 
 var fullness: int = 76
 var mood: int = 72
@@ -197,6 +199,7 @@ var ambient_expires_at: float = 0.0
 var memory_tags: Array[String] = []
 var memory_notes: Array[String] = []
 var device_prompt_memories: Array[Dictionary] = []
+var device_prompt_followups: Array[String] = []
 var device_memory_events: Array[String] = []
 var last_seen_at: int = 0
 var last_interaction_at: int = 0
@@ -514,6 +517,8 @@ func to_dict() -> Dictionary:
 		"pet_kind": pet_kind,
 		"personality": personality,
 		"care_tendency": care_tendency,
+		"assigned_device_id": assigned_device_id,
+		"runtime_location": runtime_location,
 		"fullness": fullness,
 		"mood": mood,
 		"energy": energy,
@@ -583,6 +588,8 @@ func load_from_dict(data: Dictionary) -> void:
 	pet_kind = String(data.get("pet_kind", pet_kind))
 	personality = _normalize_personality(String(data.get("personality", personality)))
 	care_tendency = _normalize_care_tendency(String(data.get("care_tendency", care_tendency)))
+	assigned_device_id = String(data.get("assigned_device_id", assigned_device_id))
+	runtime_location = String(data.get("runtime_location", runtime_location))
 	fullness = int(data.get("fullness", fullness))
 	mood = int(data.get("mood", mood))
 	energy = int(data.get("energy", energy))
@@ -631,6 +638,8 @@ func load_core_dict(data: Dictionary) -> void:
 	pet_kind = String(data.get("pet_kind", pet_kind))
 	personality = _normalize_personality(String(data.get("personality", personality)))
 	care_tendency = _normalize_care_tendency(String(data.get("care_tendency", care_tendency)))
+	assigned_device_id = String(data.get("assigned_device_id", assigned_device_id))
+	runtime_location = String(data.get("runtime_location", runtime_location))
 	fullness = int(data.get("fullness", fullness))
 	mood = int(data.get("mood", mood))
 	energy = int(data.get("energy", energy))
@@ -698,6 +707,8 @@ func to_sync_dict() -> Dictionary:
 			"name": pet_name,
 			"kind": pet_kind,
 			"personality": personality,
+			"assigned_device_id": assigned_device_id,
+			"runtime_location": runtime_location,
 			"fullness": fullness,
 			"mood": mood,
 			"energy": energy,
@@ -713,6 +724,7 @@ func to_sync_dict() -> Dictionary:
 		"chat": chat_entries.duplicate(true),
 		"memory": {
 			"prompts": device_prompt_memories.duplicate(true),
+			"followups": device_prompt_followups.duplicate(),
 			"events": device_memory_events.duplicate(),
 		},
 	}
@@ -723,6 +735,8 @@ func load_from_sync_dict(data: Dictionary) -> void:
 	pet_name = String(pet_data.get("name", pet_name))
 	pet_kind = String(pet_data.get("kind", pet_kind))
 	personality = _normalize_personality(String(pet_data.get("personality", personality)))
+	assigned_device_id = String(pet_data.get("assigned_device_id", assigned_device_id))
+	runtime_location = String(pet_data.get("runtime_location", "pc"))
 	fullness = int(pet_data.get("fullness", fullness))
 	mood = int(pet_data.get("mood", mood))
 	energy = int(pet_data.get("energy", energy))
@@ -747,6 +761,9 @@ func load_from_sync_dict(data: Dictionary) -> void:
 	for row: Variant in memory_data.get("prompts", []):
 		if row is Dictionary:
 			device_prompt_memories.append((row as Dictionary).duplicate(true))
+	device_prompt_followups.clear()
+	for row: Variant in memory_data.get("followups", []):
+		device_prompt_followups.append(String(row))
 	device_memory_events.clear()
 	for row: Variant in memory_data.get("events", []):
 		device_memory_events.append(String(row))
@@ -802,6 +819,8 @@ func _push_event(text: String) -> void:
 
 func _default_personality_for_kind(kind: String) -> String:
 	match kind:
+		"q":
+			return PERSONALITY_CALM
 		"purple":
 			return PERSONALITY_CALM
 		_:
@@ -833,11 +852,14 @@ func _clear_prompt() -> void:
 func clear_active_prompt() -> void:
 	_clear_prompt()
 
-func set_device_memories(prompts: Array, events: Array) -> void:
+func set_device_memories(prompts: Array, followups: Array, events: Array) -> void:
 	device_prompt_memories.clear()
 	for row: Variant in prompts:
 		if row is Dictionary:
 			device_prompt_memories.append((row as Dictionary).duplicate(true))
+	device_prompt_followups.clear()
+	for line: Variant in followups:
+		device_prompt_followups.append(String(line))
 	device_memory_events.clear()
 	for line: Variant in events:
 		device_memory_events.append(String(line))
@@ -883,6 +905,29 @@ func memory_preview_lines(limit: int = 6) -> Array[String]:
 		if lines.size() >= limit:
 			return lines
 	for line: String in memory_notes:
+		var cleaned := line.strip_edges()
+		if cleaned.is_empty():
+			continue
+		lines.append(cleaned)
+		if lines.size() >= limit:
+			return lines
+	return lines
+
+func device_prompt_summary_lines(limit: int = 4) -> Array[String]:
+	var lines: Array[String] = []
+	for row: Dictionary in device_prompt_memories:
+		var slot_label := String(row.get("label", "提醒")).strip_edges()
+		var reply := String(row.get("reply", "")).strip_edges()
+		if reply.is_empty():
+			continue
+		lines.append("%s：%s" % [slot_label, reply])
+		if lines.size() >= limit:
+			return lines
+	return lines
+
+func device_followup_lines(limit: int = 3) -> Array[String]:
+	var lines: Array[String] = []
+	for line: String in device_prompt_followups:
 		var cleaned := line.strip_edges()
 		if cleaned.is_empty():
 			continue

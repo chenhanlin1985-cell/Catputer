@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <FS.h>
 
 namespace PetStorage {
     static constexpr uint8_t MAX_SOUVENIRS = 12;
@@ -8,9 +9,13 @@ namespace PetStorage {
     static constexpr size_t SOUVENIR_NOTE_LEN = 96;
     static constexpr uint8_t PROMPT_SLOT_COUNT = 6;
     static constexpr size_t PROMPT_REPLY_LEN = 64;
+    static constexpr uint8_t MAX_PET_MEMORY_LINES = 24;
+    static constexpr uint8_t MAX_EVENT_LOG_LINES = 40;
 
     bool begin();
     bool isAvailable();
+    fs::FS& fs();
+    uint64_t cardSizeMB();
 
     bool loadSouvenirs(char items[][SOUVENIR_ITEM_LEN], char notes[][SOUVENIR_NOTE_LEN], uint8_t& count, uint8_t maxCount = MAX_SOUVENIRS);
     bool saveSouvenirs(const char items[][SOUVENIR_ITEM_LEN], const char notes[][SOUVENIR_NOTE_LEN], uint8_t count, uint8_t maxCount = MAX_SOUVENIRS);

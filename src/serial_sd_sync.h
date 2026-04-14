@@ -9,7 +9,7 @@ public:
     void tick();
 
 private:
-    static constexpr size_t LINE_BUF_SIZE = 640;
+    static constexpr size_t LINE_BUF_SIZE = 2048;
 
     void processLine(char* line);
     void replyOk(const char* extra = nullptr);

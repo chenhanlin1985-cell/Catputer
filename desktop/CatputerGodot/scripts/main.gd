@@ -9,6 +9,7 @@ const CatHouseView = preload("res://scripts/cat_house_view.gd")
 const CAT_VARIANTS: Array[Dictionary] = [
 	{"kind": "orange", "label": "\u6a58\u732b"},
 	{"kind": "purple", "label": "\u7d2b\u732b"},
+	{"kind": "q", "label": "\u4f01\u9e45"},
 ]
 
 const PERSONALITY_VARIANTS: Array[Dictionary] = [
@@ -35,9 +36,12 @@ var active_pet_id: String = ""
 var current_device_pet_id: String = ""
 var selected_return_pet_id: String = ""
 var saved_sync_host: String = "192.168.212.104"
+var selected_target_device_id: String = ""
 var town_sync_active: bool = false
 var latest_weather_label: String = ""
 var care_settings: Dictionary = DEFAULT_CARE_SETTINGS.duplicate(true)
+var device_registry: Dictionary = {}
+var device_assignments: Dictionary = {}
 
 var bridge: DeviceBridge
 var stage_view: CompanionStage
@@ -60,6 +64,8 @@ var sync_status_label: Label
 var sync_state_label: Label
 var sync_log: RichTextLabel
 var sync_host_input: LineEdit
+var sync_device_option: OptionButton
+var sync_device_detail_label: RichTextLabel
 var sync_push_input: LineEdit
 var sync_toggle_button: Button
 var sync_enter_button: Button
@@ -113,6 +119,7 @@ func _ready() -> void:
 	_load_state()
 	_ensure_default_roster()
 	_build_ui()
+	_refresh_sync_device_targets()
 	_refresh_all()
 	bridge = DeviceBridge.new()
 	add_child(bridge)
@@ -393,10 +400,15 @@ func _build_warehouse_tab(parent: TabContainer) -> void:
 	warehouse_list.item_selected.connect(_on_warehouse_selected)
 	warehouse_list.focus_mode = Control.FOCUS_NONE
 	split.add_child(warehouse_list)
+	var right_scroll := ScrollContainer.new()
+	right_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	right_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	split.add_child(right_scroll)
 	var right := VBoxContainer.new()
 	right.add_theme_constant_override("separation", 10)
 	right.custom_minimum_size = Vector2(320, 0)
-	split.add_child(right)
+	right_scroll.add_child(right)
 	var detail_panel := PanelContainer.new()
 	right.add_child(detail_panel)
 	var detail_margin := MarginContainer.new()
@@ -571,7 +583,7 @@ func _build_sync_tab(parent: TabContainer) -> void:
 	sync_status_label.text = "\u8fd8\u6ca1\u8fdb\u57ce\u540c\u6b65"
 	tab.add_child(sync_status_label)
 	sync_state_label = Label.new()
-	sync_state_label.text = "\u5148\u5728\u7aef\u4fa7\u6309 T \u8ba9\u5c0f\u732b\u8fdb\u57ce"
+	sync_state_label.text = "触屏端保持在线后，在这里点击“进城同步”把小猫接到电脑端。"
 	tab.add_child(sync_state_label)
 	var host_row := HBoxContainer.new()
 	tab.add_child(host_row)
@@ -579,11 +591,20 @@ func _build_sync_tab(parent: TabContainer) -> void:
 	sync_host_input.placeholder_text = "\u8bbe\u5907 IP\uff0c\u4f8b\u5982 192.168.212.104"
 	sync_host_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	host_row.add_child(sync_host_input)
+	sync_device_option = OptionButton.new()
+	sync_device_option.custom_minimum_size = Vector2(190, 0)
+	sync_device_option.item_selected.connect(_on_sync_device_option_selected)
+	host_row.add_child(sync_device_option)
 	sync_toggle_button = Button.new()
 	sync_toggle_button.text = "\u505c\u6b62\u76d1\u542c"
 	sync_toggle_button.focus_mode = Control.FOCUS_NONE
 	sync_toggle_button.pressed.connect(_toggle_bridge)
 	host_row.add_child(sync_toggle_button)
+	sync_device_detail_label = RichTextLabel.new()
+	sync_device_detail_label.fit_content = true
+	sync_device_detail_label.scroll_active = false
+	sync_device_detail_label.custom_minimum_size = Vector2(0, 84)
+	tab.add_child(sync_device_detail_label)
 	var sync_mode_row := HBoxContainer.new()
 	tab.add_child(sync_mode_row)
 	sync_enter_button = Button.new()
@@ -650,7 +671,11 @@ func _current_pet() -> PetState:
 	return cats[0] if not cats.is_empty() else null
 
 func _stage_pet() -> PetState:
-	var device_pet := _find_pet_by_id(current_device_pet_id)
+	var selected_device_pet_id := _selected_device_pet_id()
+	var device_pet := _find_pet_by_id(selected_device_pet_id)
+	if device_pet != null:
+		return device_pet
+	device_pet = _find_pet_by_id(current_device_pet_id)
 	if device_pet != null:
 		return device_pet
 	return _current_pet()
@@ -665,6 +690,47 @@ func _find_pet_by_id(pet_id: String) -> PetState:
 		if pet.pet_id == pet_id:
 			return pet
 	return null
+
+func _selected_device_id_or_legacy() -> String:
+	if not selected_target_device_id.strip_edges().is_empty():
+		return selected_target_device_id.strip_edges()
+	if sync_host_input != null and not sync_host_input.text.strip_edges().is_empty():
+		return "manual:%s" % sync_host_input.text.strip_edges()
+	return ""
+
+func _selected_device_pet_id() -> String:
+	var device_id := _selected_device_id_or_legacy()
+	if device_id.is_empty():
+		return current_device_pet_id
+	return String(device_assignments.get(device_id, current_device_pet_id))
+
+func _set_device_pet(device_id: String, pet_id: String) -> void:
+	var clean_device_id := device_id.strip_edges()
+	var clean_pet_id := pet_id.strip_edges()
+	if clean_device_id.is_empty() or clean_pet_id.is_empty():
+		return
+	device_assignments[clean_device_id] = clean_pet_id
+	current_device_pet_id = clean_pet_id
+
+func _is_pet_assigned_to_any_device(pet_id: String) -> bool:
+	var clean_pet_id := pet_id.strip_edges()
+	if clean_pet_id.is_empty():
+		return false
+	for assigned_id: Variant in device_assignments.values():
+		if String(assigned_id) == clean_pet_id:
+			return true
+	return false
+
+func _device_label(device_id: String) -> String:
+	var row_variant: Variant = device_registry.get(device_id, {})
+	if row_variant is Dictionary:
+		var row := row_variant as Dictionary
+		var dt := String(row.get("device_type", "device"))
+		var ip := String(row.get("source_ip", "")).strip_edges()
+		if not ip.is_empty():
+			return "%s | %s | %s" % [dt, device_id, ip]
+		return "%s | %s" % [dt, device_id]
+	return device_id
 
 func _pet_matches_snapshot_identity(pet: PetState, pet_obj: Dictionary) -> bool:
 	if pet == null:
@@ -683,7 +749,7 @@ func _find_sync_merge_candidate(pet_obj: Dictionary) -> PetState:
 		if by_id != null:
 			return by_id
 
-	var current_device := _find_pet_by_id(current_device_pet_id)
+	var current_device := _find_pet_by_id(_selected_device_pet_id())
 	if _pet_matches_snapshot_identity(current_device, pet_obj):
 		return current_device
 
@@ -732,6 +798,9 @@ func _collapse_duplicate_identity_cats(target: PetState) -> void:
 			current_device_pet_id = target.pet_id
 		if selected_return_pet_id == duplicate.pet_id:
 			selected_return_pet_id = target.pet_id
+		for device_id: Variant in device_assignments.keys():
+			if String(device_assignments.get(device_id, "")) == duplicate.pet_id:
+				device_assignments[device_id] = target.pet_id
 		DesktopPersistence.delete_pet_memory(duplicate.pet_id)
 		cats.remove_at(index)
 
@@ -739,6 +808,7 @@ func _ensure_default_roster() -> void:
 	if cats.is_empty():
 		var orange := PetState.create_named("\u5c0f\u6a58", "orange", PetState.PERSONALITY_LIVELY)
 		var purple := PetState.create_named("\u5c0f\u8461\u8404", "purple", PetState.PERSONALITY_CALM)
+		orange.runtime_location = "device"
 		cats = [orange, purple]
 		current_device_pet_id = orange.pet_id
 		selected_return_pet_id = orange.pet_id
@@ -749,6 +819,8 @@ func _ensure_default_roster() -> void:
 		current_device_pet_id = cats[0].pet_id
 	if selected_return_pet_id.is_empty():
 		selected_return_pet_id = current_device_pet_id
+	if not selected_target_device_id.is_empty() and not current_device_pet_id.is_empty() and not device_assignments.has(selected_target_device_id):
+		device_assignments[selected_target_device_id] = current_device_pet_id
 
 func _add_new_cat_from_form() -> void:
 	var kind_index: int = clamp(warehouse_kind_option.selected, 0, CAT_VARIANTS.size() - 1)
@@ -776,7 +848,7 @@ func _delete_selected_cat() -> void:
 	if cats.size() <= 1:
 		_append_sync_log("\u81f3\u5c11\u8981\u4fdd\u7559\u4e00\u53ea\u732b")
 		return
-	if pet.pet_id == current_device_pet_id:
+	if _is_pet_assigned_to_any_device(pet.pet_id) or pet.pet_id == current_device_pet_id:
 		_append_sync_log("\u5f53\u524d\u5728\u7aef\u4fa7\u7684\u732b\u4e0d\u80fd\u5220\u9664")
 		return
 	DesktopPersistence.delete_pet_memory(pet.pet_id)
@@ -806,6 +878,7 @@ func _refresh_all() -> void:
 	_refresh_souvenirs()
 	_refresh_colony_view()
 	_refresh_warehouse()
+	_refresh_sync_device_detail()
 	if focus_status_label != null:
 		focus_status_label.text = _focus_mode_status_text()
 	if focus_toggle_button != null:
@@ -862,12 +935,13 @@ func _refresh_colony_view() -> void:
 	if colony_view == null:
 		return
 	var colony_active_id := active_pet_id
-	if not current_device_pet_id.is_empty() and colony_active_id == current_device_pet_id:
+	var selected_device_pet_id := _selected_device_pet_id()
+	if not selected_device_pet_id.is_empty() and colony_active_id == selected_device_pet_id:
 		for pet in cats:
-			if pet.pet_id != current_device_pet_id:
+			if pet.pet_id != selected_device_pet_id:
 				colony_active_id = pet.pet_id
 				break
-	colony_view.set_roster(cats, colony_active_id, current_device_pet_id, selected_return_pet_id, town_sync_active)
+	colony_view.set_roster(cats, colony_active_id, selected_device_pet_id, selected_return_pet_id, town_sync_active)
 	if colony_selected_label != null:
 		var pet := _find_pet_by_id(colony_active_id)
 		if pet == null:
@@ -883,9 +957,10 @@ func _refresh_colony_view() -> void:
 
 func _refresh_warehouse() -> void:
 	warehouse_list.clear()
+	var selected_device_pet_id := _selected_device_pet_id()
 	for pet in cats:
-		var where := "\u7aef\u4fa7" if pet.pet_id == current_device_pet_id else "\u732b\u4ed3"
-		if town_sync_active and pet.pet_id == current_device_pet_id:
+		var where := "\u7aef\u4fa7" if pet.runtime_location == "device" else "\u732b\u4ed3"
+		if town_sync_active and pet.pet_id == selected_device_pet_id:
 			where = "\u8fdb\u57ce\u4e2d"
 		var badges: Array[String] = []
 		if pet.pet_id == selected_return_pet_id:
@@ -900,9 +975,10 @@ func _refresh_warehouse() -> void:
 		var index := _index_for_pet(active_pet_id)
 		if index >= 0:
 			warehouse_list.select(index)
-	var current_name := _find_pet_by_id(current_device_pet_id).pet_name if _find_pet_by_id(current_device_pet_id) != null else "\u65e0"
+	var current_name := _find_pet_by_id(selected_device_pet_id).pet_name if _find_pet_by_id(selected_device_pet_id) != null else "\u65e0"
 	var return_name := _find_pet_by_id(selected_return_pet_id).pet_name if _find_pet_by_id(selected_return_pet_id) != null else "\u672a\u9009"
-	warehouse_hint_label.text = "\u5f53\u524d\u7aef\u4fa7\uff1a%s\n\u51c6\u5907\u56de\u7aef\uff1a%s" % [current_name, return_name]
+	var target_device := _device_label(selected_target_device_id) if not selected_target_device_id.is_empty() else "\u672a\u9009\u8bbe\u5907"
+	warehouse_hint_label.text = "\u5f53\u524d\u7aef\u4fa7\uff1a%s\n\u51c6\u5907\u56de\u7aef\uff1a%s\n\u76ee\u6807\u8bbe\u5907\uff1a%s" % [current_name, return_name, target_device]
 	_refresh_care_settings_ui()
 	_refresh_warehouse_detail()
 
@@ -924,8 +1000,8 @@ func _refresh_warehouse_detail() -> void:
 		for button: Button in warehouse_scene_buttons.values():
 			button.disabled = true
 		return
-	var where := "\u7aef\u4fa7" if pet.pet_id == current_device_pet_id else "\u7535\u8111\u4ed3\u5e93"
-	if town_sync_active and pet.pet_id == current_device_pet_id:
+	var where := "\u7aef\u4fa7" if pet.runtime_location == "device" else "\u7535\u8111\u4ed3\u5e93"
+	if town_sync_active and pet.pet_id == _selected_device_pet_id():
 		where = "\u8fdb\u57ce\u540c\u6b65\u4e2d"
 	var target_text := "\u662f" if pet.pet_id == selected_return_pet_id else "\u5426"
 	warehouse_name_label.text = pet.pet_name
@@ -937,6 +1013,8 @@ func _refresh_warehouse_detail() -> void:
 	warehouse_meta_label.append_text("[b]\u6027\u683c[/b] %s\n" % pet.personality_label())
 	warehouse_meta_label.append_text("[b]\u5173\u7cfb[/b] %s\n" % pet.affection_label())
 	warehouse_meta_label.append_text("[b]\u4f4d\u7f6e[/b] %s\n" % where)
+	if not pet.assigned_device_id.is_empty():
+		warehouse_meta_label.append_text("[b]\u76ee\u6807\u7aef[/b] %s\n" % pet.assigned_device_id)
 	warehouse_meta_label.append_text("[b]\u56de\u7aef[/b] %s\n" % target_text)
 	warehouse_meta_label.append_text("[b]\u8fd1\u51b5[/b] %s" % pet.status_summary())
 	_set_warehouse_stat("fullness", pet.fullness)
@@ -959,12 +1037,26 @@ func _refresh_warehouse_detail() -> void:
 		warehouse_prompt_button.visible = false
 		warehouse_prompt_button.text = ""
 	warehouse_memory_label.clear()
+	var prompt_lines := pet.device_prompt_summary_lines(4)
+	var followup_lines := pet.device_followup_lines(3)
 	var memory_lines := pet.memory_preview_lines(6)
-	if memory_lines.is_empty():
+	if prompt_lines.is_empty() and followup_lines.is_empty() and memory_lines.is_empty():
 		warehouse_memory_label.append_text("还没有特别想记下来的事。")
 	else:
-		for line: String in memory_lines:
-			warehouse_memory_label.append_text("• %s\n" % line)
+		if not prompt_lines.is_empty():
+			warehouse_memory_label.append_text("[b]今天回答过[/b]\n")
+			for line: String in prompt_lines:
+				warehouse_memory_label.append_text("• %s\n" % line)
+			warehouse_memory_label.append_text("\n")
+		if not followup_lines.is_empty():
+			warehouse_memory_label.append_text("[b]接下来会轻轻提醒[/b]\n")
+			for line: String in followup_lines:
+				warehouse_memory_label.append_text("• %s\n" % line)
+			warehouse_memory_label.append_text("\n")
+		if not memory_lines.is_empty():
+			warehouse_memory_label.append_text("[b]最近记得的事[/b]\n")
+			for line: String in memory_lines:
+				warehouse_memory_label.append_text("• %s\n" % line)
 	for button: Button in warehouse_scene_buttons.values():
 		button.disabled = false
 
@@ -1153,6 +1245,8 @@ func _type_label(kind: String) -> String:
 
 func _kind_label(kind: String) -> String:
 	match kind:
+		"q":
+			return "\u4f01\u9e45"
 		"purple":
 			return "\u7d2b\u732b"
 		_:
@@ -1344,7 +1438,98 @@ func _set_sync_mode(active: bool, message: String = "") -> void:
 		sync_status_label.text = message
 	_refresh_warehouse()
 
+func _refresh_sync_device_targets() -> void:
+	if sync_device_option == null:
+		return
+	sync_device_option.clear()
+	var ids: Array[String] = []
+	for key: Variant in device_registry.keys():
+		ids.append(String(key))
+	ids.sort()
+	if ids.is_empty():
+		sync_device_option.add_item("手动输入IP")
+		sync_device_option.set_item_metadata(0, "")
+		sync_device_option.select(0)
+		_refresh_sync_device_detail()
+		return
+	var selected_index := -1
+	for i in range(ids.size()):
+		var did := ids[i]
+		var row_variant: Variant = device_registry.get(did, {})
+		var row: Dictionary = {}
+		if row_variant is Dictionary:
+			row = row_variant as Dictionary
+		var ip := String(row.get("source_ip", ""))
+		var dt := String(row.get("device_type", "unknown"))
+		var online := bool(row.get("online", true))
+		var marker := "在线" if online else "离线"
+		sync_device_option.add_item("%s | %s | %s" % [dt, did, marker])
+		sync_device_option.set_item_metadata(i, did)
+		if selected_target_device_id == did:
+			selected_index = i
+	if selected_index < 0:
+		selected_target_device_id = ids[0]
+		selected_index = 0
+	sync_device_option.select(selected_index)
+	var selected_row_variant: Variant = device_registry.get(selected_target_device_id, {})
+	if selected_row_variant is Dictionary:
+		var selected_row := selected_row_variant as Dictionary
+		var selected_ip := String(selected_row.get("source_ip", "")).strip_edges()
+		if not selected_ip.is_empty() and (sync_host_input.text.strip_edges().is_empty() or not sync_host_input.has_focus()):
+			sync_host_input.text = selected_ip
+	_refresh_sync_device_detail()
+
+func _on_sync_device_option_selected(index: int) -> void:
+	if sync_device_option == null:
+		return
+	var did := String(sync_device_option.get_item_metadata(index))
+	selected_target_device_id = did
+	var row_variant: Variant = device_registry.get(did, {})
+	if row_variant is Dictionary:
+		var row := row_variant as Dictionary
+		var ip := String(row.get("source_ip", "")).strip_edges()
+		if not ip.is_empty():
+			sync_host_input.text = ip
+	_refresh_sync_device_detail()
+	_refresh_all()
+
+func _refresh_sync_device_detail() -> void:
+	if sync_device_detail_label == null:
+		return
+	sync_device_detail_label.clear()
+	if selected_target_device_id.is_empty():
+		sync_device_detail_label.append_text("当前使用手动 IP。发现端侧广播后，这里会出现可选设备。")
+		return
+	var row_variant: Variant = device_registry.get(selected_target_device_id, {})
+	var pet_id := _selected_device_pet_id()
+	var pet := _find_pet_by_id(pet_id)
+	if not (row_variant is Dictionary):
+		sync_device_detail_label.append_text("目标设备：%s\n" % selected_target_device_id)
+		sync_device_detail_label.append_text("端侧宠物：%s" % (pet.pet_name if pet != null else "未知"))
+		return
+	var row := row_variant as Dictionary
+	var caps_variant: Variant = row.get("caps", {})
+	var caps: Dictionary = {}
+	if caps_variant is Dictionary:
+		caps = caps_variant as Dictionary
+	var cap_parts: Array[String] = []
+	if int(caps.get("touch", 0)) != 0:
+		cap_parts.append("触屏")
+	if int(caps.get("keyboard", 0)) != 0:
+		cap_parts.append("键盘")
+	if int(caps.get("mic", 0)) != 0:
+		cap_parts.append("麦克风")
+	if int(caps.get("speaker", 0)) != 0:
+		cap_parts.append("喇叭")
+	if cap_parts.is_empty():
+		cap_parts.append("能力未知")
+	sync_device_detail_label.append_text("[b]目标端侧[/b] %s\n" % _device_label(selected_target_device_id))
+	sync_device_detail_label.append_text("[b]能力[/b] %s\n" % " / ".join(cap_parts))
+	sync_device_detail_label.append_text("[b]端侧宠物[/b] %s\n" % (pet.pet_name if pet != null else "未知"))
+	sync_device_detail_label.append_text("[b]回端候选[/b] %s" % (_find_pet_by_id(selected_return_pet_id).pet_name if _find_pet_by_id(selected_return_pet_id) != null else "未选"))
+
 func _on_sync_enter_pressed() -> void:
+	var target_device_id := _selected_device_id_or_legacy()
 	var result: Dictionary = bridge.request_sync_enter(sync_host_input.text)
 	if not bool(result.get("ok", false)):
 		var message := String(result.get("error", "\u8fdb\u57ce\u5931\u8d25"))
@@ -1354,17 +1539,37 @@ func _on_sync_enter_pressed() -> void:
 		return
 	var snapshot: Variant = result.get("snapshot", {})
 	if snapshot is Dictionary:
-		var synced_pet := _apply_device_snapshot(snapshot as Dictionary)
+		var snapshot_dict := snapshot as Dictionary
+		var device_info_variant: Variant = snapshot_dict.get("device", {})
+		var device_info: Dictionary = {}
+		if device_info_variant is Dictionary:
+			device_info = device_info_variant as Dictionary
+		var incoming_device_id := String(device_info.get("id", "")).strip_edges()
+		if not incoming_device_id.is_empty():
+			selected_target_device_id = incoming_device_id
+			target_device_id = incoming_device_id
+		var synced_pet := _apply_device_snapshot(snapshot_dict)
 		active_pet_id = synced_pet.pet_id
 		selected_return_pet_id = synced_pet.pet_id
 		current_device_pet_id = synced_pet.pet_id
+		synced_pet.runtime_location = "pc"
+		if not target_device_id.is_empty():
+			synced_pet.assigned_device_id = target_device_id
+			_set_device_pet(target_device_id, synced_pet.pet_id)
 	_refresh_all()
 	_set_sync_mode(true, "\u5df2\u7ecf\u63a5\u5230\u57ce\u91cc")
 	sync_state_label.text = "\u5f53\u524d\u7aef\u4fa7\u5c0f\u732b\u5df2\u7ecf\u5728\u7535\u8111\u7aef\u4ed3\u5e93\u91cc\uff0c\u53ef\u4ee5\u9009\u62e9\u4efb\u610f\u4e00\u53ea\u56de\u7aef\u3002"
 	_append_sync_log("\u5df2\u8fdb\u57ce\u540c\u6b65\uff0c\u63a5\u624b\u7aef\u4fa7\u72b6\u6001")
 
 func _apply_device_snapshot(snapshot: Dictionary) -> PetState:
-	var pet_obj: Dictionary = snapshot.get("pet", {})
+	var pet_obj_variant: Variant = snapshot.get("pet", {})
+	var pet_obj: Dictionary = {}
+	if pet_obj_variant is Dictionary:
+		pet_obj = pet_obj_variant as Dictionary
+	var device_obj_variant: Variant = snapshot.get("device", {})
+	var device_obj: Dictionary = {}
+	if device_obj_variant is Dictionary:
+		device_obj = device_obj_variant as Dictionary
 	var incoming_id := String(pet_obj.get("id", current_device_pet_id))
 	var target := _find_sync_merge_candidate(pet_obj)
 	if target == null:
@@ -1372,6 +1577,10 @@ func _apply_device_snapshot(snapshot: Dictionary) -> PetState:
 		cats.append(target)
 	var old_pet_id := target.pet_id
 	target.load_from_sync_dict(snapshot)
+	target.runtime_location = "pc"
+	var source_device_id := String(device_obj.get("id", "")).strip_edges()
+	if not source_device_id.is_empty():
+		target.assigned_device_id = source_device_id
 	target.ensure_identity()
 	if not incoming_id.is_empty() and old_pet_id != incoming_id:
 		DesktopPersistence.rename_pet_memory(old_pet_id, incoming_id, target.to_memory_dict())
@@ -1383,7 +1592,12 @@ func _on_sync_leave_pressed() -> void:
 	if chosen == null:
 		sync_status_label.text = "\u6ca1\u6709\u53ef\u56de\u7aef\u7684\u732b"
 		return
+	var target_device_id := _selected_device_id_or_legacy()
 	var snapshot: Dictionary = chosen.to_sync_dict()
+	var route: Dictionary = {}
+	if not target_device_id.is_empty():
+		route["target_device_id"] = target_device_id
+	snapshot["route"] = route
 	var result: Dictionary = bridge.request_sync_leave(sync_host_input.text, snapshot)
 	if not bool(result.get("ok", false)):
 		var message := String(result.get("error", "\u51fa\u57ce\u5931\u8d25"))
@@ -1393,6 +1607,9 @@ func _on_sync_leave_pressed() -> void:
 		return
 	current_device_pet_id = chosen.pet_id
 	active_pet_id = chosen.pet_id
+	chosen.runtime_location = "device"
+	chosen.assigned_device_id = target_device_id
+	_set_device_pet(target_device_id, chosen.pet_id)
 	_set_sync_mode(false, "\u5df2\u7ecf\u9001\u56de\u7aef\u4fa7")
 	sync_state_label.text = "%s \u5df2\u7ecf\u56de\u5230\u7aef\u4fa7\u3002" % chosen.pet_name
 	_append_sync_log("\u5df2\u628a %s \u9001\u56de\u7aef\u4fa7" % chosen.pet_name)
@@ -1415,7 +1632,8 @@ func _on_bridge_state_changed(listening: bool, message: String) -> void:
 func _on_bridge_raw_packet(text: String) -> void:
 	_append_sync_log("\u6536\u5230\u5e7f\u64ad: %s" % text)
 
-func _on_bridge_state_packet(data: Dictionary) -> void:
+func _on_bridge_state_packet(data: Dictionary, source_ip: String) -> void:
+	_upsert_device_registry(data, source_ip)
 	var mode := String(data.get("m", "\u672a\u77e5"))
 	var weather := str(data.get("w", "-"))
 	var temperature := str(data.get("t", "-"))
@@ -1423,15 +1641,44 @@ func _on_bridge_state_packet(data: Dictionary) -> void:
 	latest_weather_label = _weather_label_from_value(weather, temperature, humidity)
 	if not town_sync_active:
 		sync_status_label.text = "\u76d1\u542c\u5728\u7ebf"
-		sync_state_label.text = "\u8bbe\u5907\u72b6\u6001\uff1amode=%s weather=%s temp=%s rh=%s" % [mode, weather, temperature, humidity]
+		var device_id := String(data.get("did", "legacy:%s" % source_ip))
+		var device_type := String(data.get("dt", "legacy"))
+		sync_state_label.text = "\u8bbe\u5907[%s|%s|%s]\u72b6\u6001\uff1amode=%s weather=%s temp=%s rh=%s" % [source_ip, device_type, device_id, mode, weather, temperature, humidity]
 	stage_view.set_weather_info(
 		int(data.get("w", -1)),
 		("" if temperature == "-" else "%s\u00b0" % temperature),
 		("" if humidity == "-" else "%s%%" % humidity)
 	)
 
-func _on_bridge_chat_packet(role: String, text: String) -> void:
-	_append_sync_log("\u8bbe\u5907\u804a\u5929: [%s] %s" % [role, text])
+func _on_bridge_chat_packet(role: String, text: String, source_ip: String) -> void:
+	_append_sync_log("\u8bbe\u5907(%s)\u804a\u5929: [%s] %s" % [source_ip, role, text])
+
+func _upsert_device_registry(data: Dictionary, source_ip: String) -> void:
+	var incoming_id := String(data.get("did", ""))
+	if incoming_id.is_empty():
+		incoming_id = "legacy:%s" % source_ip
+	var row: Dictionary = {}
+	if device_registry.has(incoming_id):
+		var existing: Variant = device_registry.get(incoming_id, {})
+		if existing is Dictionary:
+			row = (existing as Dictionary).duplicate(true)
+	row["device_id"] = incoming_id
+	row["device_type"] = String(data.get("dt", row.get("device_type", "legacy")))
+	row["source_ip"] = source_ip
+	row["last_seen_unix"] = int(Time.get_unix_time_from_system())
+	row["online"] = true
+	row["caps"] = {
+		"touch": int(data.get("tc", 0)),
+		"keyboard": int(data.get("kc", 0)),
+		"mic": int(data.get("mc", 0)),
+		"speaker": int(data.get("sp", 0)),
+	}
+	device_registry[incoming_id] = row
+	if selected_target_device_id.is_empty():
+		selected_target_device_id = incoming_id
+	if not current_device_pet_id.is_empty() and not device_assignments.has(incoming_id):
+		device_assignments[incoming_id] = current_device_pet_id
+	_refresh_sync_device_targets()
 
 func _append_sync_log(text: String) -> void:
 	sync_log.append_text("• %s\n" % text)
@@ -1479,7 +1726,10 @@ func _save_state() -> void:
 		"active_pet_id": active_pet_id,
 		"current_device_pet_id": current_device_pet_id,
 		"selected_return_pet_id": selected_return_pet_id,
+		"selected_target_device_id": selected_target_device_id,
 		"sync_host": sync_host_input.text if sync_host_input != null else "",
+		"device_registry": device_registry.duplicate(true),
+		"device_assignments": device_assignments.duplicate(true),
 		"care_settings": care_settings.duplicate(true),
 	}
 	DesktopPersistence.save_data(data)
@@ -1505,7 +1755,14 @@ func _load_state() -> void:
 	active_pet_id = String(data.get("active_pet_id", active_pet_id))
 	current_device_pet_id = String(data.get("current_device_pet_id", current_device_pet_id))
 	selected_return_pet_id = String(data.get("selected_return_pet_id", selected_return_pet_id))
+	selected_target_device_id = String(data.get("selected_target_device_id", selected_target_device_id))
 	saved_sync_host = String(data.get("sync_host", saved_sync_host))
+	var loaded_registry: Variant = data.get("device_registry", {})
+	if loaded_registry is Dictionary:
+		device_registry = (loaded_registry as Dictionary).duplicate(true)
+	var loaded_assignments: Variant = data.get("device_assignments", {})
+	if loaded_assignments is Dictionary:
+		device_assignments = (loaded_assignments as Dictionary).duplicate(true)
 	var loaded_care: Variant = data.get("care_settings", {})
 	if loaded_care is Dictionary:
 		care_settings = DEFAULT_CARE_SETTINGS.duplicate(true)

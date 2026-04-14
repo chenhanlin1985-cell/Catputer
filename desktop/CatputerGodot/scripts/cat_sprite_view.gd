@@ -3,6 +3,7 @@ class_name CatSpriteView
 
 const HandheldSprites = preload("res://scripts/handheld_sprites.gd")
 const HandheldSpritesPurple = preload("res://scripts/handheld_sprites_purple.gd")
+const HandheldSpritesQ = preload("res://scripts/handheld_sprites_q.gd")
 
 const STATE_IDLE := "idle"
 const STATE_HAPPY := "happy"
@@ -153,7 +154,11 @@ func _current_texture() -> Texture2D:
 	return frames[_frame_index % frames.size()]
 
 func _frames_for_state(state_name: String) -> Array[Texture2D]:
-	var sprite_source := HandheldSpritesPurple if cat_kind == "purple" else HandheldSprites
+	var sprite_source := HandheldSprites
+	if cat_kind == "purple":
+		sprite_source = HandheldSpritesPurple
+	elif cat_kind == "q":
+		sprite_source = HandheldSpritesQ
 	match state_name:
 		STATE_LOOK:
 			return sprite_source.get_frames(STATE_IDLE)

@@ -1,12 +1,38 @@
 #include "ai_client.h"
 #include "config.h"
 #include "utils.h"
+#include <WiFi.h>
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 
 static constexpr const char* AI_CHAT_PATH = "/compatible-mode/v1/chat/completions";
 static constexpr const char* AI_MODEL = "qwen-plus";
+
+static String sanitizeHeaderValue(const String& input) {
+    String out = input;
+    out.trim();
+    out.replace("\r", "");
+    out.replace("\n", "");
+    return out;
+}
+
+static bool writeAll(Client& client, const uint8_t* data, size_t len, size_t* writtenOut) {
+    size_t written = 0;
+    unsigned long lastWrite = millis();
+    while (written < len) {
+        size_t n = client.write(data + written, len - written);
+        if (n > 0) {
+            written += n;
+            lastWrite = millis();
+            continue;
+        }
+        if (!client.connected() || millis() - lastWrite > 8000) break;
+        delay(5);
+    }
+    if (writtenOut) *writtenOut = written;
+    return written == len;
+}
 
 void AIClient::begin(const String& key, const String& host,
                      const String& port, const String& token) {
@@ -32,32 +58,50 @@ void AIClient::sendMessage(const String& userMessage,
     }
     busy = true;
 
-    WiFiClient plainClient;
-    WiFiClientSecure secureClient;
-    bool useTls = (apiPort == "443");
-    if (useTls) secureClient.setInsecure();
-    Client& client = useTls ? static_cast<Client&>(secureClient) : static_cast<Client&>(plainClient);
-    client.setTimeout(5000);  // milliseconds
+    String host = apiHost;
+    host.trim();
+    if (host.startsWith("https://")) host = host.substring(8);
+    else if (host.startsWith("http://")) host = host.substring(7);
+    int slashPos = host.indexOf('/');
+    if (slashPos >= 0) host = host.substring(0, slashPos);
+    host.trim();
+    if (host.length() == 0) {
+        Serial.println("[AI] Invalid host");
+        busy = false;
+        if (onError) onError("Invalid host");
+        return;
+    }
 
-    int port = atoi(apiPort.c_str());
+    String portText = apiPort;
+    portText.trim();
+    int port = atoi(portText.c_str());
     if (port <= 0 || port > 65535) {
-        Serial.println("[AI] Invalid port");
+        Serial.printf("[AI] Invalid port: '%s'\n", apiPort.c_str());
         busy = false;
         if (onError) onError("Invalid port");
         return;
     }
+
+    // Determine TLS from parsed numeric port instead of raw string equality.
+    bool useTls = (port == 443 || port == 8443);
+    WiFiClient plainClient;
+    WiFiClientSecure secureClient;
+    if (useTls) secureClient.setInsecure();
+    Client& client = useTls ? static_cast<Client&>(secureClient) : static_cast<Client&>(plainClient);
+    client.setTimeout(5000);  // milliseconds
+
     Serial.printf("[AI] host=%s port=%d tls=%d keyLen=%u tokenLen=%u heap=%u\n",
-        apiHost.c_str(), port, useTls ? 1 : 0,
+        host.c_str(), port, useTls ? 1 : 0,
         apiKey.length(), authToken.length(), ESP.getFreeHeap());
 
     IPAddress resolvedIp;
-    if (!WiFi.hostByName(apiHost.c_str(), resolvedIp)) {
+    if (!WiFi.hostByName(host.c_str(), resolvedIp)) {
         Serial.println("[AI] DNS failed");
         busy = false;
         if (onError) onError("DNS failed");
         return;
     }
-    Serial.printf("[AI] DNS %s -> %s\n", apiHost.c_str(), resolvedIp.toString().c_str());
+    Serial.printf("[AI] DNS %s -> %s\n", host.c_str(), resolvedIp.toString().c_str());
 
     if (useTls) {
         WiFiClient tcpProbe;
@@ -67,9 +111,9 @@ void AIClient::sendMessage(const String& userMessage,
         if (tcpOk) tcpProbe.stop();
     }
 
-    Serial.printf("[AI] Connecting to %s:%d...\n", apiHost.c_str(), port);
+    Serial.printf("[AI] Connecting to %s:%d...\n", host.c_str(), port);
 
-    if (!client.connect(apiHost.c_str(), port)) {
+    if (!client.connect(host.c_str(), port)) {
         if (useTls) {
             char errBuf[128] = {0};
             secureClient.lastError(errBuf, sizeof(errBuf));
@@ -83,39 +127,111 @@ void AIClient::sendMessage(const String& userMessage,
 
     // Build JSON doc, measure length, serialize directly to socket.
     // No intermediate String body — saves ~800 bytes of heap.
+    size_t bodyLen = 0;
     {
-        const String& bearer = apiKey.length() > 0 ? apiKey : authToken;
+        // Runtime gateway token is the source of truth for the direct model API.
+        // The older apiKey field may contain stale OpenClaw setup data.
+        String bearer = sanitizeHeaderValue(authToken.length() > 0 ? authToken : apiKey);
+        if (bearer.length() == 0) {
+            Serial.println("[AI] Missing API key/token");
+            client.stop();
+            busy = false;
+            if (onError) onError("API key missing");
+            return;
+        }
+        char hostHeader[192];
+        if ((port == 443 && useTls) || port == 80) {
+            snprintf(hostHeader, sizeof(hostHeader), "%s", host.c_str());
+        } else {
+            snprintf(hostHeader, sizeof(hostHeader), "%s:%s", host.c_str(), portText.c_str());
+        }
         JsonDocument doc;
         buildRequestDoc(userMessage, doc);
-        size_t bodyLen = measureJson(doc);
-        client.printf("POST %s HTTP/1.1\r\n"
-                      "Host: %s:%s\r\n"
-                      "Authorization: Bearer %s\r\n"
-                      "Content-Type: application/json\r\n"
-                      "Content-Length: %u\r\n"
-                      "Connection: close\r\n\r\n",
-                      AI_CHAT_PATH,
-                      apiHost.c_str(), apiPort.c_str(), bearer.c_str(), bodyLen);
-        serializeJson(doc, client);
+        bodyLen = measureJson(doc);
+        int headerWritten = client.printf("POST %s HTTP/1.1\r\n"
+                                          "Host: %s\r\n"
+                                          "User-Agent: Catputer/1.0\r\n"
+                                          "Authorization: Bearer %s\r\n"
+                                          "Content-Type: application/json\r\n"
+                                          "Content-Length: %u\r\n"
+                                          "Connection: close\r\n\r\n",
+                                          AI_CHAT_PATH,
+                                          hostHeader, bearer.c_str(), bodyLen);
+        if (headerWritten <= 0) {
+            Serial.printf("[AI] Header write failed (%d)\n", headerWritten);
+            if (useTls) {
+                char errBuf[128] = {0};
+                secureClient.lastError(errBuf, sizeof(errBuf));
+                Serial.printf("[AI] TLS lastError: %s\n", errBuf);
+            }
+            client.stop();
+            busy = false;
+            if (onError) onError("Header write failed");
+            return;
+        }
+        char* bodyBuf = static_cast<char*>(malloc(bodyLen + 1));
+        if (!bodyBuf) {
+            Serial.printf("[AI] Body buffer alloc failed len=%u heap=%u\n",
+                          (unsigned)bodyLen, ESP.getFreeHeap());
+            client.stop();
+            busy = false;
+            if (onError) onError("Body alloc failed");
+            return;
+        }
+        size_t encodedLen = serializeJson(doc, bodyBuf, bodyLen + 1);
+        if (encodedLen != bodyLen) {
+            Serial.printf("[AI] Body encode mismatch %u/%u\n", (unsigned)encodedLen, (unsigned)bodyLen);
+            free(bodyBuf);
+            client.stop();
+            busy = false;
+            if (onError) onError("Body encode failed");
+            return;
+        }
+        size_t bodyWritten = 0;
+        bool bodyOk = writeAll(client, reinterpret_cast<const uint8_t*>(bodyBuf), bodyLen, &bodyWritten);
+        free(bodyBuf);
+        client.flush();
+        if (!bodyOk) {
+            Serial.printf("[AI] Body write mismatch %u/%u\n", (unsigned)bodyWritten, (unsigned)bodyLen);
+            if (useTls) {
+                char errBuf[128] = {0};
+                secureClient.lastError(errBuf, sizeof(errBuf));
+                Serial.printf("[AI] TLS lastError: %s\n", errBuf);
+            }
+            client.stop();
+            busy = false;
+            if (onError) onError("Body write failed");
+            return;
+        }
     } // doc freed here
 
-    Serial.printf("[AI] Sent, heap=%u\n", ESP.getFreeHeap());
+    Serial.printf("[AI] Sent bytes=%u, heap=%u\n", (unsigned)bodyLen, ESP.getFreeHeap());
 
     // Read HTTP response headers — zero heap allocation (stack buffer only)
-    unsigned long deadline = millis() + 30000;
+    unsigned long startWait = millis();
+    unsigned long firstByteDeadline = startWait + 15000;
+    unsigned long headerDeadline = startWait + 60000;
     bool httpOk = false;
     int httpStatus = 0;
     bool chunked = false;
+    bool sawAnyHeaderLine = false;
+    bool sawAnyByte = false;
     char hdrBuf[256];
     int hdrLen = 0;
-    while (client.connected() && millis() < deadline) {
-        if (!client.available()) { delay(10); continue; }
+    while ((client.connected() || client.available()) && millis() < headerDeadline) {
+        if (!client.available()) {
+            if (!sawAnyByte && millis() >= firstByteDeadline) break;
+            delay(10);
+            continue;
+        }
+        sawAnyByte = true;
         char c = client.read();
         if (c == '\n') {
             // Strip trailing \r
             if (hdrLen > 0 && hdrBuf[hdrLen - 1] == '\r') hdrLen--;
             hdrBuf[hdrLen] = '\0';
             if (hdrLen == 0) break; // empty line = end of headers
+            sawAnyHeaderLine = true;
             if (strstr(hdrBuf, "HTTP/") == hdrBuf) {
                 Serial.printf("[AI] Status: %s\n", hdrBuf);
                 const char* statusPtr = strchr(hdrBuf, ' ');
@@ -141,9 +257,27 @@ void AIClient::sendMessage(const String& userMessage,
         if (errLen > 0) {
             Serial.printf("[AI] Error body: %s\n", errBody);
         }
+        if (useTls) {
+            char errBuf[128] = {0};
+            secureClient.lastError(errBuf, sizeof(errBuf));
+            Serial.printf("[AI] TLS lastError: %s\n", errBuf);
+        }
         client.stop();
         busy = false;
-        if (onError) onError("HTTP error");
+        if (onError) {
+            char msg[96];
+            if (httpStatus > 0) {
+                // Keep short for tiny chat UI.
+                snprintf(msg, sizeof(msg), "HTTP %d", httpStatus);
+            } else if (!sawAnyByte) {
+                snprintf(msg, sizeof(msg), "No response bytes");
+            } else if (!sawAnyHeaderLine) {
+                snprintf(msg, sizeof(msg), "No HTTP header");
+            } else {
+                snprintf(msg, sizeof(msg), "HTTP error");
+            }
+            onError(String(msg));
+        }
         return;
     }
 

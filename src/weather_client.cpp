@@ -1,22 +1,82 @@
 #include "weather_client.h"
-#include <WiFiClientSecure.h>
+#include <WiFiClient.h>
 #include <WiFi.h>
 #include <ArduinoJson.h>
 
-// Timeout for HTTP read operations (10 seconds)
-static constexpr unsigned long HTTP_TIMEOUT_MS = 10000;
+// Weather runs on-demand/infrequently, so give the remote API a little breathing room.
+static constexpr unsigned long HTTP_TIMEOUT_MS = 4000;
+
+static String normalizeCityName(const String& city) {
+    String value = city;
+    value.trim();
+    if (value == "深圳" || value.equalsIgnoreCase("shenzhen")) return "Shenzhen";
+    if (value == "北京" || value.equalsIgnoreCase("beijing")) return "Beijing";
+    if (value == "上海" || value.equalsIgnoreCase("shanghai")) return "Shanghai";
+    if (value == "广州" || value.equalsIgnoreCase("guangzhou")) return "Guangzhou";
+    if (value == "杭州" || value.equalsIgnoreCase("hangzhou")) return "Hangzhou";
+    if (value == "成都" || value.equalsIgnoreCase("chengdu")) return "Chengdu";
+    if (value == "武汉" || value.equalsIgnoreCase("wuhan")) return "Wuhan";
+    return value;
+}
+
+static bool isUrlSafe(char c) {
+    return (c >= 'A' && c <= 'Z') ||
+           (c >= 'a' && c <= 'z') ||
+           (c >= '0' && c <= '9') ||
+           c == '-' || c == '_' || c == '.' || c == '~';
+}
+
+static String urlEncode(const String& value) {
+    String encoded;
+    static const char hex[] = "0123456789ABCDEF";
+    for (size_t i = 0; i < value.length(); i++) {
+        uint8_t c = (uint8_t)value[i];
+        if (isUrlSafe((char)c)) {
+            encoded += (char)c;
+        } else if (c == ' ') {
+            encoded += "%20";
+        } else {
+            encoded += '%';
+            encoded += hex[(c >> 4) & 0x0F];
+            encoded += hex[c & 0x0F];
+        }
+    }
+    return encoded;
+}
+
+static bool connectWeatherHost(WiFiClient& client, const char* host) {
+    client.setTimeout(HTTP_TIMEOUT_MS);
+
+    IPAddress resolvedIp;
+    if (!WiFi.hostByName(host, resolvedIp)) {
+        Serial.printf("[WEATHER] DNS failed: %s\n", host);
+        return false;
+    }
+
+    Serial.printf("[WEATHER] DNS %s -> %s\n", host, resolvedIp.toString().c_str());
+    if (client.connect(host, 80)) return true;
+
+    Serial.printf("[WEATHER] Host connection failed: %s\n", host);
+    client.stop();
+    delay(20);
+    client.setTimeout(HTTP_TIMEOUT_MS);
+    if (client.connect(resolvedIp, 80)) return true;
+
+    Serial.printf("[WEATHER] IP connection failed: %s\n", resolvedIp.toString().c_str());
+    return false;
+}
 
 // Skip HTTP response headers (zero heap allocation).
 // Detects \r\n\r\n (standard) or \n\n (lenient) as end-of-headers.
 // Also scans for "Transfer-Encoding: chunked" and sets *chunked flag.
-static bool skipHeaders(WiFiClientSecure& client, unsigned long deadline, bool* chunked) {
+static bool skipHeaders(Client& client, unsigned long deadline, bool* chunked) {
     *chunked = false;
     // State: 0=in content, 1=saw \r, 2=saw \n (line ended), 3=saw \r after line end
     int state = 0;
     // Ring buffer to detect "chunked" keyword
     char ring[7] = {};
     int ringPos = 0;
-    while (client.connected() && millis() < deadline) {
+    while ((client.connected() || client.available()) && millis() < deadline) {
         if (!client.available()) { delay(1); continue; }
         char c = client.read();
 
@@ -56,7 +116,7 @@ static bool skipHeaders(WiFiClientSecure& client, unsigned long deadline, bool* 
 
 // Read HTTP body into buffer with deadline.
 // Handles chunked transfer-encoding or reads until connection closes.
-static int readBody(WiFiClientSecure& client, char* buf, int bufSize, unsigned long deadline, bool chunked) {
+static int readBody(Client& client, char* buf, int bufSize, unsigned long deadline, bool chunked) {
     int len = 0;
     if (chunked) {
         while (len < bufSize - 1 && millis() < deadline) {
@@ -103,18 +163,28 @@ done:
 }
 
 void WeatherClient::begin(const String& city) {
-    Serial.printf("[WEATHER] Init with city: %s\n", city.c_str());
-    if (resolveCity(city)) {
-        fetchWeather();
-    }
-    Serial.printf("[WEATHER] Init done, heap=%d\n", ESP.getFreeHeap());
+    cityName = normalizeCityName(city);
+    hasCoords = false;
+    data.valid = false;
+    lastUpdate = 0;
+    lastResolveAttempt = 0;
+    Serial.printf("[WEATHER] Init deferred, city: %s\n", cityName.c_str());
 }
 
 void WeatherClient::update() {
-    if (!hasCoords) return;
     if (WiFi.status() != WL_CONNECTED) return;
 
     unsigned long now = millis();
+    if (!hasCoords) {
+        if (cityName.length() == 0) return;
+        if (lastResolveAttempt != 0 && now - lastResolveAttempt < RESOLVE_RETRY_INTERVAL) return;
+        lastResolveAttempt = now;
+        if (!resolveCity(cityName)) return;
+        // Resolve succeeded; fetch immediately once.
+        fetchWeather();
+        return;
+    }
+
     if (now - lastUpdate >= UPDATE_INTERVAL) {
         fetchWeather();
     }
@@ -126,16 +196,16 @@ bool WeatherClient::resolveCity(const String& city) {
         return false;
     }
 
-    WiFiClientSecure client;
-    client.setInsecure();
+    WiFiClient client;
 
-    if (!client.connect("geocoding-api.open-meteo.com", 443)) {
+    if (!connectWeatherHost(client, "geocoding-api.open-meteo.com")) {
         Serial.println("[WEATHER] Geocoding connection failed");
         return false;
     }
 
-    char path[160];
-    int written = snprintf(path, sizeof(path), "/v1/search?name=%s&count=1&language=en", city.c_str());
+    String encodedCity = urlEncode(normalizeCityName(city));
+    char path[192];
+    int written = snprintf(path, sizeof(path), "/v1/search?name=%s&count=1&language=en", encodedCity.c_str());
     if (written >= (int)sizeof(path)) {
         Serial.println("[WEATHER] City name too long");
         client.stop();
@@ -144,6 +214,8 @@ bool WeatherClient::resolveCity(const String& city) {
 
     client.printf("GET %s HTTP/1.1\r\n", path);
     client.println("Host: geocoding-api.open-meteo.com");
+    client.println("User-Agent: Catputer/1.0");
+    client.println("Accept: application/json");
     client.println("Connection: close");
     client.println();
 
@@ -187,10 +259,9 @@ bool WeatherClient::resolveCity(const String& city) {
 }
 
 bool WeatherClient::fetchWeather() {
-    WiFiClientSecure client;
-    client.setInsecure();
+    WiFiClient client;
 
-    if (!client.connect("api.open-meteo.com", 443)) {
+    if (!connectWeatherHost(client, "api.open-meteo.com")) {
         Serial.println("[WEATHER] Weather API connection failed");
         return false;
     }
@@ -203,6 +274,8 @@ bool WeatherClient::fetchWeather() {
 
     client.printf("GET %s HTTP/1.1\r\n", path);
     client.println("Host: api.open-meteo.com");
+    client.println("User-Agent: Catputer/1.0");
+    client.println("Accept: application/json");
     client.println("Connection: close");
     client.println();
 

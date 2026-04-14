@@ -1,5 +1,11 @@
 #pragma once
+#if defined(CATPUTER_WAVESHARE_AMOLED_18)
+#include "waveshare_device.h"
+#elif defined(CATPUTER_TOUCH_UI)
+#include <M5Unified.h>
+#else
 #include <M5Cardputer.h>
+#endif
 #include "utils.h"
 
 class VoiceInput {

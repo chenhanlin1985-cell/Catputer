@@ -11,9 +11,11 @@
 #include "cmd_server.h"
 #include "voice_input.h"
 #include "tts_playback.h"
+#include "local_tts.h"
 #include "weather_client.h"
 #include "pet_storage.h"
 #include "serial_sd_sync.h"
+#include "bluetooth_keyboard_mode.h"
 
 // ── Build-time defaults (may be empty if not set in .env) ──
 #ifndef WIFI_SSID
@@ -32,10 +34,10 @@
 #define OPENCLAW_TOKEN ""
 #endif
 #ifndef API_HOST
-#define API_HOST OPENCLAW_HOST
+#define API_HOST "dashscope.aliyuncs.com"
 #endif
 #ifndef API_PORT
-#define API_PORT OPENCLAW_PORT
+#define API_PORT "443"
 #endif
 #ifndef API_KEY
 #define API_KEY OPENCLAW_TOKEN
@@ -69,16 +71,31 @@ Chat chat;
 AIClient aiClient;
 VoiceInput voiceInput;
 TTSPlayback ttsPlayback;
+LocalTTS localTts;
 WeatherClient weatherClient;
 CmdServer cmdServer;
 SerialSDSync serialSDSync;
+BluetoothKeyboardMode bluetoothKeyboardMode;
 
-enum class AppMode { SETUP, COMPANION, CHAT };
+enum class AppMode { SETUP, COMPANION, CHAT, BLUETOOTH };
 static AppMode appMode = AppMode::SETUP;
 static bool offlineMode = false;
+static bool bluetoothWifiWasConnected = false;
+static bool bluetoothWifiRestorePending = false;
+static bool bluetoothWifiUsedSecondary = false;
+static unsigned long bluetoothWifiRestoreStartedAt = 0;
+static String bluetoothReconnectSSID;
+static String bluetoothReconnectPASS;
 static bool townSyncActive = false;
 static unsigned long townSyncLeaseUntil = 0;
 static constexpr unsigned long TOWN_SYNC_LEASE_MS = 15000;
+static String deviceId = "catputer-unknown";
+static const char* DEVICE_TYPE = "cardputer";
+static const char* DEVICE_NAME = "Catputer";
+static constexpr int DEVICE_CAP_TOUCH = 0;
+static constexpr int DEVICE_CAP_KEYBOARD = 1;
+static constexpr int DEVICE_CAP_MIC = 1;
+static constexpr int DEVICE_CAP_SPEAKER = 1;
 
 // ── Setup mode state ──
 enum class SetupStep { SSID, PASSWORD, API_KEY_STEP, CONNECTING };
@@ -95,22 +112,28 @@ void fillBuildTimeDefaults();
 void enterSetupMode();
 void updateSetupMode();
 void handleSetupKey(char key, bool enter, bool backspace, bool tab, bool ctrl);
-bool tryConnect(const String& ssid, const String& pass);
+bool tryConnect(const String& ssid, const String& pass, int maxAttempts = 10);
 void connectWiFi();
 void initOnlineServices(bool usedSecondary);
 void enterCompanionMode();
 void enterChatMode();
+void enterBluetoothMode();
+void exitBluetoothMode();
 void applySpeakerVolume();
 void changeSpeakerVolume(int delta);
 void toggleAutoSpeak();
+void serviceCompanionSpeech();
+void tickBluetoothWifiRestore();
 void refreshWifiScanList();
 bool beginTownSync();
 bool renewTownSyncLease();
 void endTownSync(const char* message = nullptr);
 void expireTownSyncIfNeeded();
+bool connectWiFiOnDemand(bool showStatus);
 String buildChatHistoryJson();
 String buildTownSyncSnapshotJson();
 bool applyTownSyncSnapshotJson(const String& snapshotJson);
+void initDeviceIdentity();
 
 static constexpr int MAX_SCAN_RESULTS = 6;
 static String setupWifiResults[MAX_SCAN_RESULTS];
@@ -119,6 +142,7 @@ static int setupWifiSelectedIndex = 0;
 static int setupWifiScrollOffset = 0;
 static bool setupWifiListVisible = false;
 static bool setupWifiScanning = false;
+static unsigned long lastWifiHealthCheckMs = 0;
 
 // ══════════════════════════════════════════════════════════════
 void setup() {
@@ -127,6 +151,7 @@ void setup() {
     Serial.begin(115200);
     delay(500);
     Serial.println("[BOOT] Starting...");
+    initDeviceIdentity();
 
     // Screen setup
     M5Cardputer.Display.setRotation(1);
@@ -144,11 +169,21 @@ void setup() {
     Config::save();
     applySpeakerVolume();
 
+    // Initialize voice/TTS baseline in offline mode too, so local speech does
+    // not depend on first successful network initialization.
+    voiceInput.begin(Config::getSttHost(), Config::getSttPort());
+    localTts.begin();
+    ttsPlayback.begin(Config::getSttHost(), Config::getSttPort(),
+                      voiceInput.getBuffer(), voiceInput.getMaxSamples());
+    ttsPlayback.attachLocalTTS(&localTts);
+
     // Play boot animation
     playBootAnimation(canvas);
 
     if (Config::isValid()) {
-        connectWiFi();
+        offlineMode = true;
+        enterCompanionMode();
+        companion.showNotification(u8"\u7f51\u7edc", u8"\u79bb\u7ebf\u542f\u52a8", u8"\u804a\u5929/\u8fdb\u57ce\u65f6\u81ea\u52a8\u8054\u7f51");
     } else {
         enterSetupMode();
     }
@@ -192,12 +227,31 @@ void fillBuildTimeDefaults() {
     } else if (Config::getCity().length() == 0) {
         Config::setCity("Beijing"); // fallback when env var not set
     }
+
+    // Hard runtime fallbacks so empty env vars or stale NVS never leave
+    // networking endpoints unusable.
+    if (Config::getGatewayHost().length() == 0)
+        Config::setGatewayHost("dashscope.aliyuncs.com");
+    if (Config::getGatewayPort().length() == 0)
+        Config::setGatewayPort("443");
+    if (Config::getSttPort().length() == 0)
+        Config::setSttPort("8090");
 }
 
 void applySpeakerVolume() {
     uint8_t volume = Config::getSpeakerVolume();
     M5Cardputer.Speaker.setVolume(volume);
+    M5Cardputer.Speaker.setChannelVolume(0, 96);   // softer UI / key / notification sounds
+    M5Cardputer.Speaker.setChannelVolume(1, 255);  // full speech channel
     Serial.printf("[AUDIO] Speaker volume=%u\n", volume);
+}
+
+void initDeviceIdentity() {
+    uint64_t chipId = ESP.getEfuseMac();
+    char idBuf[24];
+    snprintf(idBuf, sizeof(idBuf), "catputer-%06lX", (unsigned long)(chipId & 0xFFFFFF));
+    deviceId = idBuf;
+    Serial.printf("[DEVICE] id=%s type=%s\n", deviceId.c_str(), DEVICE_TYPE);
 }
 
 void changeSpeakerVolume(int delta) {
@@ -223,8 +277,37 @@ void toggleAutoSpeak() {
     Config::save();
     companion.showNotification(
         u8"\u8bed\u97f3",
-        u8"\u81ea\u52a8\u6717\u8bfb",
+        u8"\u8bed\u97f3\u53cd\u9988",
         enabled ? u8"\u5df2\u5f00\u542f" : u8"\u5df2\u5173\u95ed");
+}
+
+void serviceCompanionSpeech() {
+    if (appMode != AppMode::COMPANION) return;
+
+    if (!ttsPlayback.isPlaying() && !voiceInput.isRecording() && !companion.hasPendingSpeech()) {
+        voiceInput.releaseIfIdle();
+        ttsPlayback.setBuffer(nullptr, 0);
+    }
+
+    if (!Config::getAutoSpeak()) return;
+    if (!companion.hasPendingSpeech()) return;
+    if (ttsPlayback.isPlaying()) return;
+    if (voiceInput.isRecording()) return;
+
+    if (!voiceInput.ensureReady()) {
+        Serial.println("[VOICE] Companion speech skipped, no shared audio buffer");
+        return;
+    }
+
+    char speech[96];
+    if (!companion.takePendingSpeech(speech, sizeof(speech))) return;
+
+    ttsPlayback.setBuffer(voiceInput.getBuffer(), voiceInput.getMaxSamples());
+    if (!ttsPlayback.requestAndPlay(speech)) {
+        Serial.printf("[VOICE] Companion speech failed: %s\n", speech);
+        voiceInput.releaseIfIdle();
+        ttsPlayback.setBuffer(nullptr, 0);
+    }
 }
 
 bool beginTownSync() {
@@ -300,6 +383,16 @@ String buildTownSyncSnapshotJson() {
     petObj["facing_left"] = companion.isFacingLeft();
     petObj["sleeping"] = companion.isSleeping();
 
+    JsonObject deviceObj = snapshot["device"].to<JsonObject>();
+    deviceObj["id"] = deviceId;
+    deviceObj["type"] = DEVICE_TYPE;
+    deviceObj["name"] = DEVICE_NAME;
+    JsonObject capsObj = deviceObj["caps"].to<JsonObject>();
+    capsObj["touch"] = DEVICE_CAP_TOUCH;
+    capsObj["keyboard"] = DEVICE_CAP_KEYBOARD;
+    capsObj["mic"] = DEVICE_CAP_MIC;
+    capsObj["speaker"] = DEVICE_CAP_SPEAKER;
+
     JsonArray souvenirs = snapshot["souvenirs"].to<JsonArray>();
     for (uint8_t i = 0; i < companion.getSouvenirCount(); i++) {
         JsonObject item = souvenirs.add<JsonObject>();
@@ -336,6 +429,14 @@ String buildTownSyncSnapshotJson() {
         row["day"] = promptDays[i];
         row["reply"] = promptReplies[i];
     }
+    char followupLines[PetStorage::PROMPT_SLOT_COUNT][PetStorage::PROMPT_REPLY_LEN] = {{0}};
+    uint8_t followupCount = 0;
+    companion.exportPromptFollowups(followupLines, followupCount);
+    JsonArray followupArr = memoryObj["followups"].to<JsonArray>();
+    for (uint8_t i = 0; i < followupCount; i++) {
+        if (!followupLines[i][0]) continue;
+        followupArr.add(followupLines[i]);
+    }
     char memoryLines[6][96] = {{0}};
     uint8_t memoryCount = 0;
     if (PetStorage::loadRecentPetMemoryEvents(companion.getPetId().c_str(), memoryLines, memoryCount, 6)) {
@@ -359,6 +460,13 @@ bool applyTownSyncSnapshotJson(const String& snapshotJson) {
 
     JsonObject petObj = doc["pet"];
     if (petObj.isNull()) return false;
+    JsonObject routeObj = doc["route"];
+    if (!routeObj.isNull()) {
+        const char* targetDeviceId = routeObj["target_device_id"] | "";
+        if (targetDeviceId[0]) {
+            Serial.printf("[SYNC] Route target device: %s\n", targetDeviceId);
+        }
+    }
 
     const char* status = petObj["status"] | "";
     companion.applySyncSnapshot(
@@ -424,7 +532,17 @@ bool applyTownSyncSnapshotJson(const String& snapshotJson) {
 // ══════════════════════════════════════════════════════════════
 void loop() {
     M5Cardputer.update();
+    tickBluetoothWifiRestore();
     expireTownSyncIfNeeded();
+    if (appMode != AppMode::SETUP && appMode != AppMode::BLUETOOTH &&
+        !offlineMode && !bluetoothWifiRestorePending &&
+        millis() - lastWifiHealthCheckMs > 2000) {
+        lastWifiHealthCheckMs = millis();
+        if (WiFi.status() != WL_CONNECTED) {
+            offlineMode = true;
+            companion.showNotification(u8"\u7f51\u7edc", u8"\u5df2\u65ad\u5f00", u8"\u53d1\u9001\u804a\u5929\u65f6\u4f1a\u81ea\u52a8\u91cd\u8fde");
+        }
+    }
 
     // Handle keyboard
     bool keyPressed = M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed();
@@ -494,6 +612,14 @@ void loop() {
                     companion.triggerMoodPromptTest();
                     break;
                 }
+                if (ks.fn && ks.word.size() > 0 && ks.word[0] == '6') {
+                    toggleAutoSpeak();
+                    break;
+                }
+                if (ks.fn && ks.word.size() > 0 && ks.word[0] == 'b') {
+                    enterBluetoothMode();
+                    break;
+                }
                 if (ks.fn && ks.word.size() > 0 && ks.word[0] == '0') {
                     companion.clearPromptTestHour();
                     break;
@@ -516,6 +642,25 @@ void loop() {
                 if (ks.fn && ks.word.size() > 0 && ks.word[0] == '.') {
                     changeSpeakerVolume(32);
                     break;
+                }
+                if (ks.word.size() > 0 && ks.word[0] == 'g') {
+                    companion.toggleFocusMode();
+                    break;
+                }
+                if (companion.isFocusModeActive()) {
+                    bool blockedByFocus = ks.tab;
+                    if (!blockedByFocus && ks.word.size() > 0) {
+                        char focusCh = ks.word[0];
+                        blockedByFocus =
+                            focusCh == 'f' || focusCh == 'p' || focusCh == 'n' ||
+                            focusCh == 'c' || focusCh == 'o' || focusCh == 'v' ||
+                            focusCh == 't' || focusCh == ';' || focusCh == '.' ||
+                            focusCh == ',' || focusCh == '/';
+                    }
+                    if (blockedByFocus) {
+                        companion.handleFocusInterrupt();
+                        break;
+                    }
                 }
                 // Digit keys 1-8 in weather sim mode
                 if (companion.isWeatherSimMode() && ks.word.size() > 0) {
@@ -542,10 +687,6 @@ void loop() {
                     companion.cleanUp();
                     break;
                 }
-                if (ks.word.size() > 0 && ks.word[0] == 'g') {
-                    companion.startToyGame();
-                    break;
-                }
                 if (ks.word.size() > 0 && ks.word[0] == 'h') {
                     companion.showActionHelp();
                     break;
@@ -559,6 +700,10 @@ void loop() {
                     break;
                 }
                 if (ks.word.size() > 0 && ks.word[0] == 't') {
+                    if (offlineMode && !connectWiFiOnDemand(true)) {
+                        companion.showNotification(u8"\u8fdb\u57ce", u8"\u6682\u65f6\u65e0\u7f51", u8"\u53ef\u4ee5\u7ee7\u7eed\u79bb\u7ebf\u966a\u4f34");
+                        break;
+                    }
                     if (!townSyncActive) beginTownSync();
                     else companion.showNotification(u8"\u732b\u54aa", u8"\u5df2\u5728\u57ce\u91cc", u8"\u7b49\u7535\u8111\u5e26\u5b83\u56de\u5bb6");
                     break;
@@ -581,14 +726,18 @@ void loop() {
 
             // Continuous direction keys: ;=up .=down ,=left /=right
             // These work even when held down (no isChange required)
-            for (char ch : ks.word) {
-                switch (ch) {
-                    case ';': companion.move(0, -1); break;
-                    case '.': companion.move(0,  1); break;
-                    case ',': companion.move(-1, 0); break;
-                    case '/': companion.move( 1, 0); break;
+            if (!companion.isFocusModeActive()) {
+                for (char ch : ks.word) {
+                    switch (ch) {
+                        case ';': companion.move(0, -1); break;
+                        case '.': companion.move(0,  1); break;
+                        case ',': companion.move(-1, 0); break;
+                        case '/': companion.move( 1, 0); break;
+                    }
                 }
             }
+
+            serviceCompanionSpeech();
 
             if (!offlineMode) weatherClient.update();
             if (!companion.isWeatherSimMode()) {
@@ -606,6 +755,7 @@ void loop() {
             // keysState() always returns fresh data — proven reliable in all rounds.
             auto ks = M5Cardputer.Keyboard.keysState();
             static bool pFn = false, pEnter = false, pDel = false, pTab = false;
+            static bool pCtrl = false, pSpace = false;
             static char pWordChar = 0;
             bool didBlock = false;
 
@@ -659,18 +809,24 @@ void loop() {
             bool enterDown = !didBlock && ks.enter && !pEnter;
             bool delDown   = !didBlock && ks.del && !pDel;
             bool tabDown   = !didBlock && ks.tab && !pTab;
+            bool ctrlSpaceDown = !didBlock && ks.ctrl && ks.space && !(pCtrl && pSpace);
+            bool ctrlEnterDown = !didBlock && ks.ctrl && ks.enter && !(pCtrl && pEnter);
             char curWordChar = (ks.word.size() > 0) ? ks.word[0] : 0;
             bool charDown  = !didBlock && curWordChar != 0 && curWordChar != pWordChar;
 
             // Save baseline for next frame
             pFn = ks.fn; pEnter = ks.enter; pDel = ks.del; pTab = ks.tab;
+            pCtrl = ks.ctrl; pSpace = ks.space;
             pWordChar = curWordChar;
 
             // ── Normal keyboard input ──
             if (!voiceInput.isRecording()) {
-                if (ks.ctrl && ks.space) {
+                if (ks.fn && curWordChar == 'b') {
+                    enterBluetoothMode();
+                    break;
+                } else if (ctrlSpaceDown) {
                     chat.toggleChineseInput();
-                } else if (ks.ctrl && ks.enter) {
+                } else if (ctrlEnterDown) {
                     toggleAutoSpeak();
                 } else if (tabDown) {
                     playTransition(canvas, false);
@@ -700,11 +856,14 @@ void loop() {
             // Check if chat has a message to send
             if (chat.hasPendingMessage() && !aiClient.isBusy()) {
                 if (offlineMode) {
-                    // Offline: show error message instead of attempting AI request
-                    String msg = chat.takePendingMessage();
-                    chat.appendAIToken(u8"[??] ????????");
-                    chat.onAIResponseComplete();
-                } else {
+                    // Lazy-connect only when user actually sends a message.
+                    if (!connectWiFiOnDemand(true)) {
+                        chat.takePendingMessage();
+                        chat.appendAIToken(u8"[\u79bb\u7ebf] \u5f53\u524d\u65e0\u6cd5\u8054\u7f51\uff0c\u804a\u5929\u672a\u53d1\u9001");
+                        chat.onAIResponseComplete();
+                    }
+                }
+                if (!offlineMode) {
                     String msg = chat.takePendingMessage();
                     Serial.printf("[CHAT] Sending: %s\n", msg.c_str());
                     if (ttsPlayback.isPlaying()) {
@@ -802,6 +961,7 @@ void loop() {
                     M5Cardputer.update();
                     ks = M5Cardputer.Keyboard.keysState();
                     pFn = ks.fn; pEnter = ks.enter; pDel = ks.del; pTab = ks.tab;
+                    pCtrl = ks.ctrl; pSpace = ks.space;
                     pWordChar = (ks.word.size() > 0) ? ks.word[0] : 0;
                     enterDown = delDown = tabDown = charDown = false;
                     fnDown = false;
@@ -815,6 +975,11 @@ void loop() {
             }
 
             // ── Sync state + Draw ──
+            if (!ttsPlayback.isPlaying() && !voiceInput.isRecording() && !voiceInput.isTranscribing()) {
+                voiceInput.releaseIfIdle();
+                ttsPlayback.setBuffer(nullptr, 0);
+            }
+
             chat.setAIThinking(aiClient.thinkingDetected);
             chat.update(canvas);
             // Override input bar if recording, transcribing, or speaking
@@ -827,10 +992,22 @@ void loop() {
             canvas.pushSprite(0, 0);
             break;
         }
+
+        case AppMode::BLUETOOTH: {
+            auto ks = M5Cardputer.Keyboard.keysState();
+            if (bluetoothKeyboardMode.shouldExit(ks)) {
+                exitBluetoothMode();
+                break;
+            }
+            bluetoothKeyboardMode.handleKeys(ks, keyPressed);
+            bluetoothKeyboardMode.update(canvas);
+            canvas.pushSprite(0, 0);
+            break;
+        }
     }
 
     // Process incoming TCP commands from desktop app
-    if (!offlineMode && appMode != AppMode::SETUP) {
+    if (!offlineMode && appMode != AppMode::SETUP && appMode != AppMode::BLUETOOTH) {
         cmdServer.tick();
     }
 
@@ -838,7 +1015,7 @@ void loop() {
     serialSDSync.tick();
 
     // Broadcast state over UDP for desktop sync (skip if offline or not yet initialized)
-    if (!offlineMode && appMode != AppMode::SETUP && !townSyncActive) {
+    if (!offlineMode && appMode != AppMode::SETUP && appMode != AppMode::BLUETOOTH && !townSyncActive) {
         const char* modeStr = "COMPANION";
         if (appMode == AppMode::CHAT) modeStr = "CHAT";
         int wType = companion.hasValidWeather() ? static_cast<int>(companion.getWeatherType()) : -1;
@@ -847,7 +1024,10 @@ void loop() {
                            companion.getFrameIndex(), modeStr,
                            companion.getNormX(), companion.getNormY(),
                            companion.isFacingLeft() ? 1 : 0, wType, temp,
-                           3, companion.getHumidityPercent());
+                           3, companion.getHumidityPercent(),
+                           deviceId.c_str(), DEVICE_TYPE,
+                           DEVICE_CAP_TOUCH, DEVICE_CAP_KEYBOARD,
+                           DEVICE_CAP_MIC, DEVICE_CAP_SPEAKER);
     }
 
     delay(16); // ~60fps cap
@@ -1132,17 +1312,23 @@ void handleSetupKey(char key, bool enter, bool backspace, bool tab, bool ctrl) {
 // ══════════════════════════════════════════════════════════════
 
 // Try connecting to a single WiFi network. Returns true on success.
-bool tryConnect(const String& ssid, const String& pass) {
+bool tryConnect(const String& ssid, const String& pass, int maxAttempts) {
     Serial.printf("[WIFI] Trying %s...\n", ssid.c_str());
+
+    if (ssid.length() == 0) {
+        Serial.println("[WIFI] Empty SSID, skip");
+        return false;
+    }
 
     WiFi.disconnect(true);
     delay(100);
     WiFi.begin(ssid.c_str(), pass.c_str());
 
     int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 30) {  // 15 seconds
-        delay(500);
+    while (WiFi.status() != WL_CONNECTED && attempts < maxAttempts) {
+        delay(250);
         attempts++;
+        M5Cardputer.update();
 
         // Update connecting screen
         canvas.fillScreen(Color::BG_DAY);
@@ -1160,7 +1346,16 @@ bool tryConnect(const String& ssid, const String& pass) {
             msg[cut] = '\0';
         }
         canvas.drawString(msg, 10, 55);
+        canvas.drawString(u8"[Tab] 取消并保持离线", 10, 74);
         canvas.pushSprite(0, 0);
+
+        // Allow user to cancel a stalled connect attempt.
+        auto ks = M5Cardputer.Keyboard.keysState();
+        if (ks.tab) {
+            Serial.println("[WIFI] Connect canceled by user");
+            WiFi.disconnect(true);
+            break;
+        }
     }
 
     bool connected = (WiFi.status() == WL_CONNECTED);
@@ -1240,7 +1435,7 @@ void initOnlineServices(bool usedSecondary) {
     // Sync time
     configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER);
 
-    // Show success briefly
+    // Keep this very short to avoid blocking input after on-demand connect.
     canvas.fillScreen(Color::BG_DAY);
     canvas.setFont(&fonts::efontCN_12);
     canvas.setTextColor(Color::CHAT_AI);
@@ -1248,7 +1443,7 @@ void initOnlineServices(bool usedSecondary) {
     canvas.drawString(u8"WiFi \u5df2\u8fde\u63a5!", 72, 50);
     canvas.drawString(WiFi.localIP().toString().c_str(), 80, 65);
     canvas.pushSprite(0, 0);
-    delay(1000);
+    delay(120);
 
     // Use secondary API host if connected via secondary WiFi
     String gwHost = Config::getGatewayHost();
@@ -1280,9 +1475,14 @@ void initOnlineServices(bool usedSecondary) {
     // text chat does not lose heap to audio before the user actually needs it.
     voiceInput.begin(sttHost, sttPort);
 
+    // Detect local ESP-SR TTS runtime prerequisites. This stays dormant unless
+    // local TTS is explicitly enabled in config.
+    localTts.begin();
+
     // Init TTS playback. Shared audio buffer is attached on-demand.
     ttsPlayback.begin(sttHost, sttPort,
                       voiceInput.getBuffer(), voiceInput.getMaxSamples());
+    ttsPlayback.attachLocalTTS(&localTts);
 
     // Init TCP command server for desktop bidirectional communication
     cmdServer.begin();
@@ -1331,5 +1531,121 @@ void enterCompanionMode() {
 void enterChatMode() {
     appMode = AppMode::CHAT;
     chat.begin(canvas);
+}
+
+bool connectWiFiOnDemand(bool showStatus) {
+    if (WiFi.status() == WL_CONNECTED) {
+        offlineMode = false;
+        return true;
+    }
+    if (!Config::isValid()) {
+        offlineMode = true;
+        return false;
+    }
+
+    // Fast pass first to keep UX responsive.
+    bool connected = tryConnect(Config::getSSID(), Config::getPassword(), 10);
+    bool usedSecondary = false;
+    if (!connected && Config::getSSID2().length() > 0) {
+        connected = tryConnect(Config::getSSID2(), Config::getPassword2(), 10);
+        if (connected) usedSecondary = true;
+    }
+
+    // Slow networks sometimes need longer DHCP/auth handshake.
+    if (!connected && showStatus) {
+        canvas.fillScreen(Color::BG_DAY);
+        canvas.setFont(&fonts::efontCN_12);
+        canvas.setTextColor(Color::CLOCK_TEXT);
+        canvas.setTextSize(1);
+        canvas.drawString(u8"\u7f51\u7edc\u7a0d\u6162\uff0c\u6b63\u5728\u518d\u8bd5\u4e00\u6b21...", 10, 55);
+        canvas.pushSprite(0, 0);
+        connected = tryConnect(Config::getSSID(), Config::getPassword(), 24);
+        usedSecondary = false;
+        if (!connected && Config::getSSID2().length() > 0) {
+            connected = tryConnect(Config::getSSID2(), Config::getPassword2(), 24);
+            if (connected) usedSecondary = true;
+        }
+    }
+
+    if (!connected) {
+        offlineMode = true;
+        if (showStatus) {
+            companion.showNotification(u8"\u7f51\u7edc", u8"\u8fde\u63a5\u5931\u8d25", u8"\u5df2\u4fdd\u6301\u79bb\u7ebf\u6a21\u5f0f");
+        }
+        return false;
+    }
+
+    offlineMode = false;
+    initOnlineServices(usedSecondary);
+    if (showStatus) {
+        companion.showNotification(u8"\u7f51\u7edc", u8"\u5df2\u8fde\u63a5", WiFi.localIP().toString().c_str());
+    }
+    return true;
+}
+
+void enterBluetoothMode() {
+    // Enter BLE keyboard with clean audio state to avoid carry-over work
+    // from chat/companion pipelines.
+    if (ttsPlayback.isPlaying()) {
+        ttsPlayback.stop();
+    }
+    voiceInput.releaseIfIdle();
+    ttsPlayback.setBuffer(nullptr, 0);
+
+    bluetoothWifiWasConnected = (WiFi.status() == WL_CONNECTED);
+    bluetoothWifiRestorePending = false;
+    bluetoothReconnectSSID = "";
+    bluetoothReconnectPASS = "";
+    bluetoothWifiUsedSecondary = false;
+    if (bluetoothWifiWasConnected) {
+        Serial.println("[BLE] Turning Wi-Fi off for keyboard mode");
+        String currentSsid = WiFi.SSID();
+        if (currentSsid == Config::getSSID2()) {
+            bluetoothReconnectSSID = Config::getSSID2();
+            bluetoothReconnectPASS = Config::getPassword2();
+            bluetoothWifiUsedSecondary = true;
+        } else {
+            bluetoothReconnectSSID = Config::getSSID();
+            bluetoothReconnectPASS = Config::getPassword();
+            bluetoothWifiUsedSecondary = false;
+        }
+        WiFi.disconnect(false, false);
+        WiFi.mode(WIFI_OFF);
+    }
+    appMode = AppMode::BLUETOOTH;
+    bluetoothKeyboardMode.begin();
+}
+
+void exitBluetoothMode() {
+    bluetoothKeyboardMode.end();
+    enterCompanionMode();
+    companion.showNotification(u8"\u84dd\u7259", u8"\u952e\u76d8\u6a21\u5f0f", u8"\u5df2\u9000\u51fa");
+    if (bluetoothWifiWasConnected && Config::isValid()) {
+        Serial.println("[BLE] Restoring Wi-Fi after keyboard mode");
+        WiFi.mode(WIFI_STA);
+        if (bluetoothReconnectSSID.length() > 0) {
+            WiFi.begin(bluetoothReconnectSSID.c_str(), bluetoothReconnectPASS.c_str());
+            bluetoothWifiRestorePending = true;
+            bluetoothWifiRestoreStartedAt = millis();
+            offlineMode = false;
+        }
+    }
+}
+
+void tickBluetoothWifiRestore() {
+    if (!bluetoothWifiRestorePending) return;
+    wl_status_t status = WiFi.status();
+    if (status == WL_CONNECTED) {
+        Serial.println("[BLE] Wi-Fi restored after keyboard mode");
+        bluetoothWifiRestorePending = false;
+        initOnlineServices(bluetoothWifiUsedSecondary);
+        companion.showNotification(u8"\u84dd\u7259", u8"\u7f51\u7edc\u5df2\u6062\u590d", u8"\u53ef\u4ee5\u7ee7\u7eed\u4f7f\u7528");
+        return;
+    }
+    if (millis() - bluetoothWifiRestoreStartedAt > 15000) {
+        Serial.println("[BLE] Wi-Fi restore timed out after keyboard mode");
+        bluetoothWifiRestorePending = false;
+        offlineMode = true;
+    }
 }
 

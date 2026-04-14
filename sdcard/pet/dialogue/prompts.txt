@@ -1,0 +1,57 @@
+# prompt question / choice / feedback / followup resources
+# key=value1|value2|value3
+
+prompt.question.morning=早安呀|今天想先做什么?
+prompt.question.breakfast=九点啦|你吃早饭了吗?
+prompt.question.lunch=到中午了|要不要吃点东西?
+prompt.question.dinner=傍晚了|晚饭想吃什么?
+prompt.question.late_night=已经很晚了|要不要早点睡?
+prompt.question.random_mood=现在心情怎么样?|想和我说说吗?
+
+prompt.recall.morning.sleepy=早安呀|昨天你说还困, 今天好点了吗?
+prompt.recall.morning.busy=早安呀|今天也会忙忙的吗?
+prompt.recall.morning.default=早安呀|又想先听你说一声早呀
+prompt.recall.breakfast.ate=九点啦|上次你有好好吃早饭, 今天也有吗?
+prompt.recall.breakfast.later=九点啦|上次你说等会吃, 今天别忘啦
+prompt.recall.breakfast.not_hungry=九点啦|今天肚子有比较想吃点东西吗?
+prompt.recall.breakfast.default=九点啦|我又来问问你的早饭
+prompt.recall.lunch.ate=到中午了|上次你有去吃饭, 今天也要记得哦
+prompt.recall.lunch.later=到中午了|上次你想稍后吃, 今天别拖太久呀
+prompt.recall.lunch.not_hungry=到中午了|现在有没有比刚才更想吃一点?
+prompt.recall.lunch.default=到中午了|想再确认一下你有没有吃饭
+prompt.recall.dinner.ate=傍晚了|你上次有好好吃晚饭, 今晚也继续吗?
+prompt.recall.dinner.later=傍晚了|这次会不会又想等会再吃呀?
+prompt.recall.dinner.not_hungry=傍晚了|现在还是不太饿吗?
+prompt.recall.dinner.default=傍晚了|想来问问今晚的肚子
+prompt.recall.late_night.sleep_now=已经很晚了|昨晚你有早点睡, 今晚也保持吗?
+prompt.recall.late_night.play_more=已经很晚了|昨晚你还想再玩会, 今晚也一样吗?
+prompt.recall.late_night.awake=已经很晚了|你昨天说还不困, 现在呢?
+prompt.recall.late_night.default=已经很晚了|今天想早点休息吗?
+prompt.recall.random_mood.happy=现在心情怎么样?|上次你说挺开心, 今天也一样吗?
+prompt.recall.random_mood.sad=现在心情怎么样?|上次你有点不开心, 今天好一点了吗?
+prompt.recall.random_mood.unsure=现在心情怎么样?|上次你说有点说不上来, 今天呢?
+prompt.recall.random_mood.default=现在心情怎么样?|想和我再说说吗?
+
+prompt.choices.morning=1 早呀|2 还困|3 先忙
+prompt.choices.breakfast=1 吃了|2 等会吃|3 还不饿
+prompt.choices.lunch=1 去吃饭|2 稍后吃|3 还不饿
+prompt.choices.dinner=1 吃晚饭|2 等会吃|3 吃过啦
+prompt.choices.late_night=1 这就睡|2 再玩会|3 还不困
+prompt.choices.random_mood=1 开心|2 不开心|3 不知道
+
+prompt.feedback.random_mood.happy=你开心, 我也开心
+prompt.feedback.random_mood.sad=抱一下, 会慢慢好起来|那我陪你待一会儿|送你一个小笑话: 喵也会打呼噜
+prompt.feedback.random_mood.unsure=那就祝你慢慢开心起来
+prompt.feedback.meal.done=那就好, 我会放心
+prompt.feedback.meal.later=好呀, 等会别忘记
+prompt.feedback.meal.not_hungry=那也要记得慢慢照顾肚子
+prompt.feedback.late_night.sleep_now=晚安, 我也安静陪你
+prompt.feedback.late_night.play_more=那就再玩一小会儿
+prompt.feedback.late_night.awake=不困也要记得放松眼睛
+
+prompt.followup.breakfast=早餐别拖太久哦
+prompt.followup.lunch=记得抽空吃点东西
+prompt.followup.dinner=晚一点也要记得吃饭
+prompt.followup.late_night=夜深了, 眼睛也想休息
+prompt.followup.random_mood.sad=如果还闷闷的, 我就在这儿
+prompt.followup.random_mood.unsure=慢慢来也没关系, 我陪你

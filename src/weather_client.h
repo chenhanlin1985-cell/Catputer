@@ -30,9 +30,12 @@ public:
 private:
     float lat = 0, lon = 0;
     bool hasCoords = false;
+    String cityName;
     WeatherData data;
     unsigned long lastUpdate = 0;
-    static constexpr unsigned long UPDATE_INTERVAL = 15 * 60 * 1000; // 15 min
+    unsigned long lastResolveAttempt = 0;
+    static constexpr unsigned long UPDATE_INTERVAL = 12UL * 60UL * 60UL * 1000UL; // 12 h
+    static constexpr unsigned long RESOLVE_RETRY_INTERVAL = 30 * 1000; // 30s
 
     bool resolveCity(const String& city);
     bool fetchWeather();

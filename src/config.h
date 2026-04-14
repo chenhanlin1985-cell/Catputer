@@ -26,6 +26,7 @@ namespace Config {
     const String& getCity();
     uint8_t getSpeakerVolume();
     bool getAutoSpeak();
+    bool getPreferLocalTTS();
     uint8_t getPetFullness();
     uint8_t getPetMood();
     uint8_t getPetEnergy();
@@ -38,6 +39,10 @@ namespace Config {
     const String& getSouvenirSlot(uint8_t index);
     const String& getSouvenirNoteSlot(uint8_t index);
     uint8_t getSouvenirCount();
+    bool getWeatherCacheValid();
+    float getWeatherCacheTemperature();
+    uint8_t getWeatherCacheType();
+    bool getWeatherCacheIsDay();
 
     // Setters
     void setSSID(const String& ssid);
@@ -54,6 +59,7 @@ namespace Config {
     void setCity(const String& city);
     void setSpeakerVolume(uint8_t volume);
     void setAutoSpeak(bool enabled);
+    void setPreferLocalTTS(bool enabled);
     void setPetFullness(uint8_t value);
     void setPetMood(uint8_t value);
     void setPetEnergy(uint8_t value);
@@ -66,6 +72,7 @@ namespace Config {
     void setSouvenirSlot(uint8_t index, const String& value);
     void setSouvenirNoteSlot(uint8_t index, const String& value);
     void setSouvenirCount(uint8_t count);
+    void setWeatherCache(bool valid, float temperature, uint8_t type, bool isDay);
 
     // Check if config is valid (has WiFi credentials)
     bool isValid();

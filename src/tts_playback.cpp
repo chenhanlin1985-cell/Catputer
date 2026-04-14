@@ -1,5 +1,24 @@
 #include "tts_playback.h"
+#include "config.h"
+#include "local_tts.h"
 #include <WiFiClient.h>
+#include <limits.h>
+
+#if defined(CATPUTER_TOUCH_UI)
+#define M5DEVICE M5
+#else
+#define M5DEVICE M5Cardputer
+#endif
+
+static void applyPCMSoftGain(int16_t* data, size_t samples, float gain) {
+    if (!data || samples == 0 || gain <= 1.0f) return;
+    for (size_t i = 0; i < samples; ++i) {
+        int32_t boosted = (int32_t)(data[i] * gain);
+        if (boosted > INT16_MAX) boosted = INT16_MAX;
+        if (boosted < INT16_MIN) boosted = INT16_MIN;
+        data[i] = (int16_t)boosted;
+    }
+}
 
 void TTSPlayback::begin(const String& host, const String& port,
                         int16_t* sharedBuf, size_t maxSamp) {
@@ -17,34 +36,54 @@ void TTSPlayback::setBuffer(int16_t* sharedBuf, size_t maxSamp) {
     Serial.printf("[TTS] Buffer updated: %p, maxSamples=%zu\n", sharedBuf, maxSamp);
 }
 
+void TTSPlayback::attachLocalTTS(LocalTTS* localEngine) {
+    local = localEngine;
+}
+
 bool TTSPlayback::requestAndPlay(const char* text) {
     if (!buffer || !text || text[0] == '\0') return false;
 
-    size_t samples = downloadPCM(text);
+    size_t samples = 0;
+    lastSampleRate = SAMPLE_RATE;
+
+    if (local) {
+        size_t localSamples = 0;
+        if (local->synthesizeToPCM(text, buffer, maxSamples, localSamples)) {
+            samples = localSamples;
+            lastSampleRate = local->getSampleRate();
+            applyPCMSoftGain(buffer, samples, 1.35f);
+            Serial.printf("[TTS] Using local TTS @ %lu Hz\n", (unsigned long)lastSampleRate);
+        } else {
+            Serial.printf("[TTS] Local TTS unavailable: %s\n", local->availabilityReason());
+        }
+    }
+
     if (samples == 0) {
-        Serial.println("[TTS] No PCM data received");
+        Serial.println("[TTS] No local PCM data received");
         return false;
     }
 
-    Serial.printf("[TTS] Playing %zu samples (%.1fs)\n", samples, (float)samples / SAMPLE_RATE);
-    M5Cardputer.Speaker.playRaw(buffer, samples, SAMPLE_RATE, false /* not stereo */);
+    Serial.printf("[TTS] Playing %zu samples (%.1fs) @ %lu Hz\n",
+                  samples, (float)samples / lastSampleRate, (unsigned long)lastSampleRate);
+    M5DEVICE.Speaker.playRaw(buffer, samples, lastSampleRate, false /* not stereo */, 1, 1, false);
     return true;
 }
 
 bool TTSPlayback::isPlaying() const {
     // Guard: treat as "still playing" for 50ms after stop to let DMA drain
     if (stopTime > 0 && millis() - stopTime < STOP_COOLDOWN_MS) return true;
-    return M5Cardputer.Speaker.isPlaying();
+    return M5DEVICE.Speaker.isPlaying();
 }
 
 void TTSPlayback::stop() {
-    M5Cardputer.Speaker.stop();
+    M5DEVICE.Speaker.stop();
     stopTime = millis();
 }
 
 size_t TTSPlayback::downloadPCM(const char* text) {
     WiFiClient client;
     client.setTimeout(15000);  // milliseconds
+    lastSampleRate = SAMPLE_RATE;
 
     int port = atoi(ttsPort.c_str());
     if (port <= 0 || port > 65535) {

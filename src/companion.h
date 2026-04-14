@@ -1,5 +1,11 @@
 #pragma once
+#if defined(CATPUTER_WAVESHARE_AMOLED_18)
+#include "waveshare_device.h"
+#elif defined(CATPUTER_TOUCH_UI)
+#include <M5Unified.h>
+#else
 #include <M5Cardputer.h>
+#endif
 #include "utils.h"
 #include "weather_client.h"
 #include "config.h"
@@ -31,6 +37,7 @@ enum class PromptSlot : int8_t {
 class Companion {
 public:
     void begin(M5Canvas& canvas);
+    void tick();
     void update(M5Canvas& canvas);
     void handleKey(char key);
 
@@ -69,19 +76,27 @@ public:
     uint8_t getSouvenirCount() const { return souvenirCount; }
     const char* getSouvenirItem(uint8_t index) const;
     const char* getSouvenirNote(uint8_t index) const;
-    void feed();
-    void play();
-    void nap();
-    void cleanUp();
+    void feed(bool visualFeedback = true);
+    void play(bool visualFeedback = true);
+    void nap(bool visualFeedback = true);
+    void cleanUp(bool visualFeedback = true);
     void startToyGame();
     void startOuting();
     void showSouvenirs();
     void showActionHelp(unsigned long durationMs = 4000);
     void toggleStatsPanel();
+    void toggleFocusMode();
+    bool isFocusModeActive() const { return focusModeActive; }
+    void handleFocusInterrupt();
     bool handlePromptKey(char key, bool enter, bool backspace, bool tab = false);
     bool hasActivePrompt() const { return activePromptSlot != PromptSlot::NONE; }
     bool isPromptTextEntryActive() const { return promptTextEntryActive; }
+    const char* getActivePromptQuestion() const;
+    const char* getActivePromptChoice(uint8_t index) const;
+    bool answerActivePromptChoice(uint8_t index);
+    void dismissActivePrompt();
     void triggerMoodPromptTest();
+    void noteUserAttention();
     void setTownSyncActive(bool active);
     void applySyncSnapshot(uint8_t newFullness, uint8_t newMood, uint8_t newEnergy,
                            uint8_t newCleanliness, uint8_t newBond, int newX, int newY,
@@ -95,6 +110,8 @@ public:
                             char replies[PetStorage::PROMPT_SLOT_COUNT][PetStorage::PROMPT_REPLY_LEN]);
     void importPromptMemory(const int askedDayStamp[PetStorage::PROMPT_SLOT_COUNT],
                             const char replies[PetStorage::PROMPT_SLOT_COUNT][PetStorage::PROMPT_REPLY_LEN]);
+    void exportPromptFollowups(char lines[PetStorage::PROMPT_SLOT_COUNT][PetStorage::PROMPT_REPLY_LEN],
+                               uint8_t& count) const;
 
     CompanionState getState() const { return state; }
     WeatherType getWeatherType() const { return weather.type; }
@@ -109,6 +126,9 @@ public:
     void showNotification(const char* app, const char* title, const char* body);
     void drawNotificationOverlay(M5Canvas& canvas);
     bool hasActiveNotification() const { return notificationActive; }
+    bool hasPendingSpeech() const { return pendingSpeechCount > 0 && pendingSpeech[0][0] != '\0'; }
+    bool takePendingSpeech(char* out, size_t outSize);
+    void speak(const char* text);
 
     // Sound effects
     static void playKeyClick();
@@ -150,6 +170,7 @@ private:
     void drawPetMeters(M5Canvas& canvas);
     void drawActionBar(M5Canvas& canvas);
     void drawStatsPanel(M5Canvas& canvas);
+    void drawFocusBubble(M5Canvas& canvas);
     void drawQuickHint(M5Canvas& canvas);
     void drawToyGame(M5Canvas& canvas);
     void drawOutingScene(M5Canvas& canvas);
@@ -169,6 +190,7 @@ private:
     void loadSouvenirs();
     void pushSouvenir(const char* item, const char* note);
     void updatePetNeeds();
+    void updateFocusMode();
     void updateScheduledPrompt();
     void updateToyGame();
     void updateOuting();
@@ -181,16 +203,22 @@ private:
     String normalizePersonality(const String& value) const;
     const char* personalityAmbient(const char* category) const;
     void maybePromptOnInteraction();
+    void pushStoryBeat(const char* text);
+    void maybeShareReturnSummary();
     void triggerScheduledPrompt(PromptSlot slot);
     void answerScheduledPrompt(const char* replyText, bool customReply, const char* feedbackText = nullptr);
     void respondToPromptChoice(int choiceIndex);
     int currentDayStamp() const;
     bool canTriggerPrompt(PromptSlot slot, int dayStamp) const;
+    bool isPromptCardSlot(PromptSlot slot) const;
+    void markPromptAsked(PromptSlot slot, int dayStamp);
     const char* promptSlotQuestion(PromptSlot slot) const;
     const char* const* promptSlotChoices(PromptSlot slot) const;
     const char* promptSlotRecallQuestion(PromptSlot slot) const;
     const char* classifyPromptReply(PromptSlot slot, const char* replyText) const;
     const char* recentMemoryAmbient(const char* category) const;
+    void schedulePromptFollowup(PromptSlot slot, const char* replyText);
+    void updatePromptFollowup();
     void drawPromptCard(M5Canvas& canvas);
     const char* promptSlotMemoryKey(PromptSlot slot) const;
 
@@ -241,6 +269,7 @@ private:
     unsigned long ambientStatusUntil = 0;
     char ambientStatus[48] = "";
     char ambientStatusCategory[16] = "";
+    bool ambientStatusRefreshPending = true;
     bool toyGameActive = false;
     uint8_t toyCatchCount = 0;
     unsigned long toyGameEndsAt = 0;
@@ -260,6 +289,7 @@ private:
     unsigned long lastPlayTime = 0;
     unsigned long lastCleanTime = 0;
     unsigned long lastGameTime = 0;
+    unsigned long lastAttentionAt = 0;
     unsigned long actionHelpUntil = 0;
     bool statsPanelVisible = false;
     bool helpPanelVisible = false;
@@ -270,9 +300,25 @@ private:
     int promptAskedDayStamp[PetStorage::PROMPT_SLOT_COUNT] = {-1, -1, -1, -1, -1};
     char promptReplies[PetStorage::PROMPT_SLOT_COUNT][PetStorage::PROMPT_REPLY_LEN] = {{0}};
     char promptInput[PetStorage::PROMPT_REPLY_LEN] = "";
+    unsigned long promptFollowupAt[PetStorage::PROMPT_SLOT_COUNT] = {0};
+    int promptFollowupDayStamp[PetStorage::PROMPT_SLOT_COUNT] = {-1, -1, -1, -1, -1, -1};
+    unsigned long promptQuietUntil = 0;
+    static constexpr unsigned long PROMPT_CARD_QUIET_MS = 20UL * 60UL * 1000UL;
+    static constexpr unsigned long PROMPT_STATUS_QUIET_MS = 45UL * 60UL * 1000UL;
+    bool focusModeActive = false;
+    unsigned long focusModeStartedAt = 0;
+    unsigned long focusModeEndsAt = 0;
+    unsigned long focusModeLastWarnAt = 0;
+    static constexpr unsigned long FOCUS_DURATION_MS = 25UL * 60UL * 1000UL;
+    static constexpr unsigned long FOCUS_WARN_COOLDOWN_MS = 12000UL;
+    static constexpr unsigned long ATTENTION_RETURN_MS = 3UL * 60UL * 1000UL;
+    static constexpr uint8_t MAX_STORY_BEATS = 3;
+    char storyBeats[MAX_STORY_BEATS][64] = {{0}};
+    uint8_t storyBeatCount = 0;
 
     // Draw a sprite with transparency (flip=true for horizontal mirror)
-    void drawSprite16(M5Canvas& canvas, int x, int y, const uint16_t* data, bool flip = false);
+    void drawSprite(M5Canvas& canvas, int x, int y, const uint16_t* data,
+                    int width, int height, int scale, bool flip = false);
 
     // Notification overlay state
     bool notificationActive = false;
@@ -281,6 +327,13 @@ private:
     char notifyApp[32];
     char notifyTitle[48];
     char notifyBody[64];
+    static constexpr uint8_t MAX_PENDING_SPEECH_SEGMENTS = 6;
+    char pendingSpeech[MAX_PENDING_SPEECH_SEGMENTS][48] = {{0}};
+    uint8_t pendingSpeechCount = 0;
+    char lastSpokenFeedback[96] = "";
+    unsigned long lastSpeechQueuedAt = 0;
+
+    void queueSpeechLine(const char* text);
 };
 
 // Boot animation (called from main.cpp)

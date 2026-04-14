@@ -2,8 +2,8 @@ extends Node
 class_name DeviceBridge
 
 signal listen_state_changed(listening: bool, message: String)
-signal state_packet_received(data: Dictionary)
-signal chat_packet_received(role: String, text: String)
+signal state_packet_received(data: Dictionary, source_ip: String)
+signal chat_packet_received(role: String, text: String, source_ip: String)
 signal raw_packet_received(text: String)
 
 const BROADCAST_PORT := 19820
@@ -12,6 +12,9 @@ const COMMAND_UDP_PORT := 19822
 
 var udp: PacketPeerUDP
 var listening: bool = false
+var client_id: String = "desktop-main"
+var client_type: String = "pc_cat_house"
+var protocol_version: int = 1
 
 func start_listening(port: int = BROADCAST_PORT) -> bool:
 	stop_listening()
@@ -39,6 +42,7 @@ func poll() -> void:
 		return
 	while udp.get_available_packet_count() > 0:
 		var packet: PackedByteArray = udp.get_packet()
+		var source_ip := udp.get_packet_ip()
 		var text: String = packet.get_string_from_utf8()
 		emit_signal("raw_packet_received", text)
 		var parsed: Variant = JSON.parse_string(text)
@@ -48,9 +52,9 @@ func poll() -> void:
 		if data.has("type"):
 			var packet_type: String = String(data.get("type", ""))
 			if packet_type == "chat":
-				emit_signal("chat_packet_received", String(data.get("role", "")), String(data.get("text", "")))
+				emit_signal("chat_packet_received", String(data.get("role", "")), String(data.get("text", "")), source_ip)
 		else:
-			emit_signal("state_packet_received", data)
+			emit_signal("state_packet_received", data, source_ip)
 
 func send_text(host: String, text: String, auto_send: bool = false) -> bool:
 	if host.strip_edges().is_empty() or text.strip_edges().is_empty():
@@ -67,13 +71,35 @@ func send_text(host: String, text: String, auto_send: bool = false) -> bool:
 	return result == OK
 
 func request_sync_enter(host: String) -> Dictionary:
-	return _send_tcp_command(host, {"cmd": "sync_enter"})
+	return _send_tcp_command(host, {
+		"cmd": "sync_enter",
+		"client": {
+			"id": client_id,
+			"type": client_type,
+			"protocol": protocol_version,
+		}
+	})
 
 func request_sync_ping(host: String) -> Dictionary:
-	return _send_tcp_command(host, {"cmd": "sync_ping"})
+	return _send_tcp_command(host, {
+		"cmd": "sync_ping",
+		"client": {
+			"id": client_id,
+			"type": client_type,
+			"protocol": protocol_version,
+		}
+	})
 
 func request_sync_leave(host: String, snapshot: Dictionary) -> Dictionary:
-	return _send_tcp_command(host, {"cmd": "sync_leave", "snapshot": snapshot}, 3.5)
+	return _send_tcp_command(host, {
+		"cmd": "sync_leave",
+		"snapshot": snapshot,
+		"client": {
+			"id": client_id,
+			"type": client_type,
+			"protocol": protocol_version,
+		}
+	}, 3.5)
 
 func _send_tcp_command(host: String, payload: Dictionary, timeout_seconds: float = 2.5) -> Dictionary:
 	var clean_host := host.strip_edges()

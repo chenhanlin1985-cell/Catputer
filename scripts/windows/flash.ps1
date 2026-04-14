@@ -5,6 +5,7 @@ param(
 $ErrorActionPreference = "Stop"
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $LocalConfig = Join-Path $RepoRoot "clawputer.local.ps1"
+$PlatformioCoreDir = Join-Path $RepoRoot ".pio-core\cardputer"
 
 if (Test-Path $LocalConfig) {
     . $LocalConfig
@@ -51,7 +52,21 @@ if (-not $Port) {
 Write-Host "Flashing Catputer to $Port ..." -ForegroundColor Cyan
 Push-Location $RepoRoot
 try {
-    python -m platformio run -t upload --upload-port $Port
+    New-Item -ItemType Directory -Force -Path $PlatformioCoreDir | Out-Null
+    $PreviousCoreDir = $env:PLATFORMIO_CORE_DIR
+    $env:PLATFORMIO_CORE_DIR = $PlatformioCoreDir
+
+    $PioExe = Join-Path $env:USERPROFILE ".platformio\penv\Scripts\platformio.exe"
+    if (Test-Path $PioExe) {
+        & $PioExe run -e m5stack-cardputer -t upload --upload-port $Port
+    } else {
+        python -m platformio run -e m5stack-cardputer -t upload --upload-port $Port
+    }
 } finally {
+    if ($null -ne $PreviousCoreDir) {
+        $env:PLATFORMIO_CORE_DIR = $PreviousCoreDir
+    } else {
+        Remove-Item Env:PLATFORMIO_CORE_DIR -ErrorAction SilentlyContinue
+    }
     Pop-Location
 }

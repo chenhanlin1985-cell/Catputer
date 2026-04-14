@@ -44,7 +44,7 @@ def push_file(port: serial.Serial, source: pathlib.Path, target_path: str):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", required=True)
-    parser.add_argument("--source", default=r"d:\clawputer\sdcard\pet\dialogue\dialogue.txt")
+    parser.add_argument("--source", default=r"d:\clawputer\sdcard\pet\dialogue")
     args = parser.parse_args()
 
     source = pathlib.Path(args.source)
@@ -58,8 +58,15 @@ def main():
         send_cmd(port, {"cmd": "ping"})
         send_cmd(port, {"cmd": "sd_mkdir", "path": "/pet"})
         send_cmd(port, {"cmd": "sd_mkdir", "path": "/pet/dialogue"})
-        push_file(port, source, "/pet/dialogue/dialogue.txt")
-        print("Dialogue file pushed to SD card.")
+        if source.is_dir():
+            for file_name in ("dialogue.txt", "prompts.txt"):
+                file_path = source / file_name
+                if file_path.exists():
+                    push_file(port, file_path, f"/pet/dialogue/{file_name}")
+                    print(f"Pushed {file_name} to SD card.")
+        else:
+            push_file(port, source, f"/pet/dialogue/{source.name}")
+            print(f"Pushed {source.name} to SD card.")
 
 
 if __name__ == "__main__":

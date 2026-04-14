@@ -16,6 +16,7 @@ static String gatewayHost2;
 static String city;
 static uint8_t speakerVolume = 255;
 static bool autoSpeak = true;
+static bool preferLocalTTS = true;
 static uint8_t petFullness = 75;
 static uint8_t petMood = 70;
 static uint8_t petEnergy = 80;
@@ -28,6 +29,10 @@ static String petPersonality;
 static String souvenirSlots[3];
 static String souvenirNoteSlots[3];
 static uint8_t souvenirCount = 0;
+static bool weatherCacheValid = false;
+static float weatherCacheTemperature = 0.0f;
+static uint8_t weatherCacheType = 8;
+static bool weatherCacheIsDay = true;
 
 bool Config::load() {
     prefs.begin("companion", true); // read-only
@@ -45,6 +50,7 @@ bool Config::load() {
     city = prefs.getString("city", "");
     speakerVolume = prefs.getUChar("spk_vol", 255);
     autoSpeak = prefs.getBool("auto_tts", true);
+    preferLocalTTS = prefs.getBool("local_tts", true);
     petFullness = prefs.getUChar("pet_full", 75);
     petMood = prefs.getUChar("pet_mood", 70);
     petEnergy = prefs.getUChar("pet_energy", 80);
@@ -61,6 +67,10 @@ bool Config::load() {
     souvenirNoteSlots[1] = prefs.getString("svn_1", "");
     souvenirNoteSlots[2] = prefs.getString("svn_2", "");
     souvenirCount = prefs.getUChar("sv_count", 0);
+    weatherCacheValid = prefs.getBool("w_valid", false);
+    weatherCacheTemperature = prefs.getFloat("w_temp", 0.0f);
+    weatherCacheType = prefs.getUChar("w_type", 8);
+    weatherCacheIsDay = prefs.getBool("w_day", true);
     prefs.end();
     return ssid.length() > 0;
 }
@@ -81,6 +91,7 @@ void Config::save() {
     prefs.putString("city", city);
     prefs.putUChar("spk_vol", speakerVolume);
     prefs.putBool("auto_tts", autoSpeak);
+    prefs.putBool("local_tts", preferLocalTTS);
     prefs.putUChar("pet_full", petFullness);
     prefs.putUChar("pet_mood", petMood);
     prefs.putUChar("pet_energy", petEnergy);
@@ -97,6 +108,10 @@ void Config::save() {
     prefs.putString("svn_1", souvenirNoteSlots[1]);
     prefs.putString("svn_2", souvenirNoteSlots[2]);
     prefs.putUChar("sv_count", souvenirCount);
+    prefs.putBool("w_valid", weatherCacheValid);
+    prefs.putFloat("w_temp", weatherCacheTemperature);
+    prefs.putUChar("w_type", weatherCacheType);
+    prefs.putBool("w_day", weatherCacheIsDay);
     prefs.end();
 }
 
@@ -118,6 +133,7 @@ void Config::reset() {
     city = "";
     speakerVolume = 255;
     autoSpeak = true;
+    preferLocalTTS = true;
     petFullness = 75;
     petMood = 70;
     petEnergy = 80;
@@ -134,6 +150,10 @@ void Config::reset() {
     souvenirNoteSlots[1] = "";
     souvenirNoteSlots[2] = "";
     souvenirCount = 0;
+    weatherCacheValid = false;
+    weatherCacheTemperature = 0.0f;
+    weatherCacheType = 8;
+    weatherCacheIsDay = true;
 }
 
 const String& Config::getSSID() { return ssid; }
@@ -150,6 +170,7 @@ const String& Config::getGatewayHost2() { return gatewayHost2; }
 const String& Config::getCity() { return city; }
 uint8_t Config::getSpeakerVolume() { return speakerVolume; }
 bool Config::getAutoSpeak() { return autoSpeak; }
+bool Config::getPreferLocalTTS() { return preferLocalTTS; }
 uint8_t Config::getPetFullness() { return petFullness; }
 uint8_t Config::getPetMood() { return petMood; }
 uint8_t Config::getPetEnergy() { return petEnergy; }
@@ -170,6 +191,10 @@ const String& Config::getSouvenirNoteSlot(uint8_t index) {
     return souvenirNoteSlots[index];
 }
 uint8_t Config::getSouvenirCount() { return souvenirCount; }
+bool Config::getWeatherCacheValid() { return weatherCacheValid; }
+float Config::getWeatherCacheTemperature() { return weatherCacheTemperature; }
+uint8_t Config::getWeatherCacheType() { return weatherCacheType; }
+bool Config::getWeatherCacheIsDay() { return weatherCacheIsDay; }
 
 void Config::setSSID(const String& s) { ssid = s; }
 void Config::setPassword(const String& p) { password = p; }
@@ -185,6 +210,7 @@ void Config::setGatewayHost2(const String& h) { gatewayHost2 = h; }
 void Config::setCity(const String& c) { city = c; }
 void Config::setSpeakerVolume(uint8_t v) { speakerVolume = v; }
 void Config::setAutoSpeak(bool enabled) { autoSpeak = enabled; }
+void Config::setPreferLocalTTS(bool enabled) { preferLocalTTS = enabled; }
 void Config::setPetFullness(uint8_t v) { petFullness = v; }
 void Config::setPetMood(uint8_t v) { petMood = v; }
 void Config::setPetEnergy(uint8_t v) { petEnergy = v; }
@@ -203,5 +229,11 @@ void Config::setSouvenirNoteSlot(uint8_t index, const String& value) {
     souvenirNoteSlots[index] = value;
 }
 void Config::setSouvenirCount(uint8_t count) { souvenirCount = count > 3 ? 3 : count; }
+void Config::setWeatherCache(bool valid, float temperature, uint8_t type, bool isDay) {
+    weatherCacheValid = valid;
+    weatherCacheTemperature = temperature;
+    weatherCacheType = type;
+    weatherCacheIsDay = isDay;
+}
 
 bool Config::isValid() { return ssid.length() > 0; }

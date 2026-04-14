@@ -1,22 +1,25 @@
 ﻿#include "companion.h"
 #include "sprites.h"
 #include "sprites_purple.h"
+#include "sprites_q.h"
 #include "pet_dialogue.h"
 #include <SD.h>
 #include <time.h>
 
+#if defined(CATPUTER_TOUCH_UI)
+#define M5DEVICE M5
+#else
+#define M5DEVICE M5Cardputer
+#endif
+
 // Character draw dimensions
 constexpr int CHAR_SCALE = 3;  // 16×3 = 48px on screen
-constexpr int CHAR_DRAW_W = CHAR_W * CHAR_SCALE;
-constexpr int CHAR_DRAW_H = CHAR_H * CHAR_SCALE;
 constexpr int GROUND_Y = SCREEN_H - 28;
 
 // Movement
 constexpr int MOVE_STEP = 2;  // 2px per step (~120px/s at 60fps)
 constexpr int MOVE_MIN_X = 0;
-constexpr int MOVE_MAX_X = SCREEN_W - CHAR_DRAW_W;
 constexpr int MOVE_MIN_Y = 16;  // below clock area
-constexpr int MOVE_MAX_Y = GROUND_Y - CHAR_DRAW_H - 2;
 
 // Day/night colors
 constexpr uint16_t SKY_DAY    = rgb565(60, 120, 200);   // Blue sky
@@ -65,25 +68,73 @@ struct SpriteSet {
     int sleepCount;
     const uint16_t* const* talk;
     int talkCount;
+    int spriteW;
+    int spriteH;
+    int scale;
 };
 
 static const SpriteSet ORANGE_SET = {
     idle_frames, IDLE_FRAME_COUNT,
     happy_frames, HAPPY_FRAME_COUNT,
     sleep_frames, SLEEP_FRAME_COUNT,
-    talk_frames, TALK_FRAME_COUNT
+    talk_frames, TALK_FRAME_COUNT,
+    CHAR_W, CHAR_H, CHAR_SCALE
 };
 
 static const SpriteSet PURPLE_SET = {
     purple_idle_frames, PURPLE_IDLE_FRAME_COUNT,
     purple_happy_frames, PURPLE_HAPPY_FRAME_COUNT,
     purple_sleep_frames, PURPLE_SLEEP_FRAME_COUNT,
-    purple_talk_frames, PURPLE_TALK_FRAME_COUNT
+    purple_talk_frames, PURPLE_TALK_FRAME_COUNT,
+    CHAR_W, CHAR_H, CHAR_SCALE
+};
+
+static const SpriteSet Q_SET = {
+    q_idle_frames, Q_IDLE_FRAME_COUNT,
+    q_happy_frames, Q_HAPPY_FRAME_COUNT,
+    q_sleep_frames, Q_SLEEP_FRAME_COUNT,
+    q_talk_frames, Q_TALK_FRAME_COUNT,
+    Q_CHAR_W, Q_CHAR_H, 2
 };
 
 static const SpriteSet& spriteSetForKind(const String& kind) {
+    if (kind == "q") return Q_SET;
     if (kind == "purple") return PURPLE_SET;
     return ORANGE_SET;
+}
+
+static int charDrawWidthForKind(const String& kind) {
+    const SpriteSet& s = spriteSetForKind(kind);
+    return s.spriteW * s.scale;
+}
+
+static int charDrawHeightForKind(const String& kind) {
+    const SpriteSet& s = spriteSetForKind(kind);
+    return s.spriteH * s.scale;
+}
+
+static int moveMaxXForKind(const String& kind) {
+    return SCREEN_W - charDrawWidthForKind(kind);
+}
+
+static int moveMaxYForKind(const String& kind) {
+    return GROUND_Y - charDrawHeightForKind(kind) - 2;
+}
+
+static bool lineHasAllTokens(const char* line, const char* tokenA, const char* tokenB = nullptr) {
+    if (!line || !tokenA) return false;
+    if (strstr(line, tokenA) == nullptr) return false;
+    if (tokenB && strstr(line, tokenB) == nullptr) return false;
+    return true;
+}
+
+static const char* promptValue(const String& key, const char* fallback) {
+    static char buf[128];
+    String value = PetDialogue::value(key);
+    if (value.length() == 0) return fallback;
+    strncpy(buf, value.c_str(), sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    return buf;
 }
 
 static void drawSplitNote(M5Canvas& canvas, const char* note, int x, int y, uint16_t color) {
@@ -107,8 +158,9 @@ static void drawSplitNote(M5Canvas& canvas, const char* note, int x, int y, uint
 void Companion::begin(M5Canvas& canvas) {
     // Center position on first call; preserve across mode switches
     if (charX == 0 && charY == 0) {
-        charX = (SCREEN_W - CHAR_DRAW_W) / 2;
-        charY = MOVE_MAX_Y;
+        const int drawW = charDrawWidthForKind(petKind);
+        charX = (SCREEN_W - drawW) / 2;
+        charY = moveMaxYForKind(petKind);
     }
     loadPetProgress();
     loadSouvenirs();
@@ -182,6 +234,8 @@ void Companion::loadPromptMemory() {
     for (uint8_t i = 0; i < PetStorage::PROMPT_SLOT_COUNT; i++) {
         promptAskedDayStamp[i] = -1;
         promptReplies[i][0] = '\0';
+        promptFollowupAt[i] = 0;
+        promptFollowupDayStamp[i] = -1;
     }
     PetStorage::loadPromptMemory(petId.c_str(), promptAskedDayStamp, promptReplies);
 }
@@ -210,6 +264,44 @@ void Companion::importPromptMemory(const int askedDayStamp[PetStorage::PROMPT_SL
         promptReplies[i][PetStorage::PROMPT_REPLY_LEN - 1] = '\0';
     }
     savePromptMemory();
+}
+
+void Companion::exportPromptFollowups(char lines[PetStorage::PROMPT_SLOT_COUNT][PetStorage::PROMPT_REPLY_LEN],
+                                      uint8_t& count) const {
+    count = 0;
+    const int dayStamp = currentDayStamp();
+    if (dayStamp < 0) return;
+
+    for (uint8_t i = 0; i < PetStorage::PROMPT_SLOT_COUNT; i++) {
+        lines[i][0] = '\0';
+        if (promptFollowupAt[i] == 0) continue;
+        if (promptFollowupDayStamp[i] != dayStamp) continue;
+
+        const char* text = "";
+        switch (static_cast<PromptSlot>(i)) {
+            case PromptSlot::BREAKFAST:
+                text = u8"之后还会轻轻提醒你吃早餐";
+                break;
+            case PromptSlot::LUNCH:
+                text = u8"之后还会轻轻提醒你记得午饭";
+                break;
+            case PromptSlot::DINNER:
+                text = u8"之后还会轻轻提醒你别忘了晚饭";
+                break;
+            case PromptSlot::LATE_NIGHT:
+                text = u8"晚一点会再提醒你让眼睛休息";
+                break;
+            case PromptSlot::RANDOM_MOOD:
+                text = u8"过一会儿还会再轻轻关心你";
+                break;
+            default:
+                break;
+        }
+        if (!text[0]) continue;
+        strncpy(lines[count], text, PetStorage::PROMPT_REPLY_LEN - 1);
+        lines[count][PetStorage::PROMPT_REPLY_LEN - 1] = '\0';
+        count++;
+    }
 }
 
 void Companion::pushSouvenir(const char* item, const char* note) {
@@ -245,7 +337,129 @@ void Companion::setTemporaryStatus(const char* text, unsigned long durationMs) {
     strncpy(temporaryStatus, text, sizeof(temporaryStatus) - 1);
     temporaryStatus[sizeof(temporaryStatus) - 1] = '\0';
     temporaryStatusUntil = millis() + durationMs;
-    ambientStatusCategory[0] = '\0';
+    ambientStatusRefreshPending = true;
+#if !defined(CATPUTER_WAVESHARE_AMOLED_18)
+    queueSpeechLine(text);
+#endif
+}
+
+void Companion::queueSpeechLine(const char* text) {
+    if (!text || !text[0]) return;
+
+    // Don't speak raw choice strings or placeholders.
+    if (strcmp(text, "1") == 0 || strcmp(text, "2") == 0 || strcmp(text, "3") == 0) return;
+
+    unsigned long now = millis();
+    if (strcmp(lastSpokenFeedback, text) == 0 && (now - lastSpeechQueuedAt) < 1200) return;
+
+    pendingSpeechCount = 0;
+    for (uint8_t i = 0; i < MAX_PENDING_SPEECH_SEGMENTS; ++i) {
+        pendingSpeech[i][0] = '\0';
+    }
+
+    auto utf8CharLen = [](unsigned char c) -> uint8_t {
+        if ((c & 0x80) == 0x00) return 1;
+        if ((c & 0xE0) == 0xC0) return 2;
+        if ((c & 0xF0) == 0xE0) return 3;
+        if ((c & 0xF8) == 0xF0) return 4;
+        return 1;
+    };
+    char* dst = pendingSpeech[0];
+    size_t dstCap = sizeof(pendingSpeech[0]) - 1;
+    size_t dstLen = 0;
+    bool justAddedPause = false;
+    const char* p = text;
+    while (*p && dstLen < dstCap) {
+        uint8_t clen = utf8CharLen((unsigned char)*p);
+        if (clen == 1) {
+            char c = *p;
+            if (c == '|' || c == '\n' || c == '\r' || c == ',' || c == '.' ||
+                c == '!' || c == '?' || c == ';' || c == ':') {
+                static const char kPause[] = "\xE3\x80\x82";  // 。
+                if (!justAddedPause && dstLen + 3 <= dstCap) {
+                    memcpy(dst + dstLen, kPause, 3);
+                    dstLen += 3;
+                    justAddedPause = true;
+                }
+                p++;
+                continue;
+            }
+            if ((c >= 0x20 && c <= 0x7E)) {
+                p++;
+                continue;
+            }
+        }
+
+        if (dstLen + clen > dstCap) break;
+        memcpy(dst + dstLen, p, clen);
+        dstLen += clen;
+        p += clen;
+        justAddedPause = false;
+    }
+
+    dst[dstLen] = '\0';
+    if (dstLen > 0) pendingSpeechCount = 1;
+
+    strncpy(lastSpokenFeedback, text, sizeof(lastSpokenFeedback) - 1);
+    lastSpokenFeedback[sizeof(lastSpokenFeedback) - 1] = '\0';
+    lastSpeechQueuedAt = now;
+}
+
+bool Companion::takePendingSpeech(char* out, size_t outSize) {
+    if (!out || outSize == 0 || pendingSpeechCount == 0 || pendingSpeech[0][0] == '\0') return false;
+    strncpy(out, pendingSpeech[0], outSize - 1);
+    out[outSize - 1] = '\0';
+    for (uint8_t i = 1; i < pendingSpeechCount; ++i) {
+        strncpy(pendingSpeech[i - 1], pendingSpeech[i], sizeof(pendingSpeech[i - 1]) - 1);
+        pendingSpeech[i - 1][sizeof(pendingSpeech[i - 1]) - 1] = '\0';
+    }
+    if (pendingSpeechCount > 0) {
+        pendingSpeech[pendingSpeechCount - 1][0] = '\0';
+        pendingSpeechCount--;
+    }
+    return true;
+}
+
+void Companion::speak(const char* text) {
+    queueSpeechLine(text);
+}
+
+void Companion::pushStoryBeat(const char* text) {
+    if (!text || !text[0]) return;
+    if (storyBeatCount > 0 && strcmp(storyBeats[0], text) == 0) return;
+
+    int upper = storyBeatCount < MAX_STORY_BEATS ? storyBeatCount : (MAX_STORY_BEATS - 1);
+    for (int i = upper; i > 0; --i) {
+        strncpy(storyBeats[i], storyBeats[i - 1], sizeof(storyBeats[i]) - 1);
+        storyBeats[i][sizeof(storyBeats[i]) - 1] = '\0';
+    }
+    strncpy(storyBeats[0], text, sizeof(storyBeats[0]) - 1);
+    storyBeats[0][sizeof(storyBeats[0]) - 1] = '\0';
+    if (storyBeatCount < MAX_STORY_BEATS) storyBeatCount++;
+}
+
+void Companion::maybeShareReturnSummary() {
+    if (storyBeatCount == 0) return;
+    if (activePromptSlot != PromptSlot::NONE || promptTextEntryActive) return;
+
+    showNotification(u8"\u5c0f\u732b", u8"\u4f60\u56de\u6765\u5566", storyBeats[0]);
+    if (storyBeatCount > 1) {
+        setTemporaryStatus(storyBeats[1], 2600);
+    } else {
+        setTemporaryStatus(u8"\u521a\u624d\u7684\u4e8b\u60f3\u8ddf\u4f60\u8bf4", 2200);
+    }
+
+    storyBeatCount = 0;
+    for (uint8_t i = 0; i < MAX_STORY_BEATS; i++) {
+        storyBeats[i][0] = '\0';
+    }
+}
+
+void Companion::noteUserAttention() {
+    unsigned long now = millis();
+    bool returning = lastAttentionAt != 0 && (now - lastAttentionAt) >= ATTENTION_RETURN_MS;
+    lastAttentionAt = now;
+    if (returning) maybeShareReturnSummary();
 }
 
 void Companion::savePetProgress(bool force) {
@@ -269,6 +483,7 @@ void Companion::savePetProgress(bool force) {
 }
 
 void Companion::showSouvenirs() {
+    noteUserAttention();
     loadSouvenirs();
     maybePromptOnInteraction();
     if (townSyncActive) {
@@ -325,17 +540,19 @@ void Companion::applySyncSnapshot(uint8_t newFullness, uint8_t newMood, uint8_t 
     energy = clampStat(newEnergy);
     cleanliness = clampStat(newCleanliness);
     bond = clampStat(newBond);
-    charX = newX;
-    charY = newY;
-    if (charX < MOVE_MIN_X) charX = MOVE_MIN_X;
-    if (charX > MOVE_MAX_X) charX = MOVE_MAX_X;
-    if (charY < MOVE_MIN_Y) charY = MOVE_MIN_Y;
-    if (charY > MOVE_MAX_Y) charY = MOVE_MAX_Y;
-    facingLeft = newFacingLeft;
     if (newPetId && newPetId[0]) petId = newPetId;
     if (newPetName && newPetName[0]) petName = newPetName;
     if (newPetKind && newPetKind[0]) petKind = newPetKind;
     if (newPetPersonality && newPetPersonality[0]) petPersonality = normalizePersonality(newPetPersonality);
+    charX = newX;
+    charY = newY;
+    const int moveMaxX = moveMaxXForKind(petKind);
+    const int moveMaxY = moveMaxYForKind(petKind);
+    if (charX < MOVE_MIN_X) charX = MOVE_MIN_X;
+    if (charX > moveMaxX) charX = moveMaxX;
+    if (charY < MOVE_MIN_Y) charY = MOVE_MIN_Y;
+    if (charY > moveMaxY) charY = moveMaxY;
+    facingLeft = newFacingLeft;
     promptMemoryLoaded = false;
     loadPromptMemory();
     activePromptSlot = PromptSlot::NONE;
@@ -433,17 +650,37 @@ bool Companion::canTriggerPrompt(PromptSlot slot, int dayStamp) const {
     return promptAskedDayStamp[idx] != dayStamp;
 }
 
+bool Companion::isPromptCardSlot(PromptSlot slot) const {
+    switch (slot) {
+        case PromptSlot::BREAKFAST:
+        case PromptSlot::LUNCH:
+        case PromptSlot::DINNER:
+        case PromptSlot::LATE_NIGHT:
+        case PromptSlot::RANDOM_MOOD:
+            return true;
+        default:
+            return false;
+    }
+}
+
+void Companion::markPromptAsked(PromptSlot slot, int dayStamp) {
+    int idx = static_cast<int>(slot);
+    if (idx < 0 || idx >= PetStorage::PROMPT_SLOT_COUNT) return;
+    promptAskedDayStamp[idx] = dayStamp;
+    savePromptMemory();
+}
+
 const char* Companion::promptSlotQuestion(PromptSlot slot) const {
     const char* recall = promptSlotRecallQuestion(slot);
     if (recall && recall[0]) return recall;
 
     switch (slot) {
-        case PromptSlot::MORNING: return u8"早安呀|今天想先做什么?";
-        case PromptSlot::BREAKFAST: return u8"九点啦|你吃早饭了吗?";
-        case PromptSlot::LUNCH: return u8"到中午了|要不要吃点东西?";
-        case PromptSlot::DINNER: return u8"傍晚了|晚饭想吃什么?";
-        case PromptSlot::LATE_NIGHT: return u8"已经很晚了|要不要早点睡?";
-        case PromptSlot::RANDOM_MOOD: return u8"现在心情怎么样?|想和我说说吗?";
+        case PromptSlot::MORNING: return promptValue("prompt.question.morning", u8"早安呀|今天想先做什么?");
+        case PromptSlot::BREAKFAST: return promptValue("prompt.question.breakfast", u8"九点啦|你吃早饭了吗?");
+        case PromptSlot::LUNCH: return promptValue("prompt.question.lunch", u8"到中午了|要不要吃点东西?");
+        case PromptSlot::DINNER: return promptValue("prompt.question.dinner", u8"傍晚了|晚饭想吃什么?");
+        case PromptSlot::LATE_NIGHT: return promptValue("prompt.question.late_night", u8"已经很晚了|要不要早点睡?");
+        case PromptSlot::RANDOM_MOOD: return promptValue("prompt.question.random_mood", u8"现在心情怎么样?|想和我说说吗?");
         default: return "";
     }
 }
@@ -491,34 +728,34 @@ const char* Companion::promptSlotRecallQuestion(PromptSlot slot) const {
 
     switch (slot) {
         case PromptSlot::MORNING:
-            if (strcmp(tag, "sleepy") == 0) return u8"早安呀|昨天你说还困, 今天好点了吗?";
-            if (strcmp(tag, "busy") == 0) return u8"早安呀|今天也会忙忙的吗?";
-            return u8"早安呀|又想先听你说一声早呀";
+            if (strcmp(tag, "sleepy") == 0) return promptValue("prompt.recall.morning.sleepy", u8"早安呀|昨天你说还困, 今天好点了吗?");
+            if (strcmp(tag, "busy") == 0) return promptValue("prompt.recall.morning.busy", u8"早安呀|今天也会忙忙的吗?");
+            return promptValue("prompt.recall.morning.default", u8"早安呀|又想先听你说一声早呀");
         case PromptSlot::BREAKFAST:
-            if (strcmp(tag, "ate") == 0) return u8"九点啦|上次你有好好吃早饭, 今天也有吗?";
-            if (strcmp(tag, "later") == 0) return u8"九点啦|上次你说等会吃, 今天别忘啦";
-            if (strcmp(tag, "not_hungry") == 0) return u8"九点啦|今天肚子有比较想吃点东西吗?";
-            return u8"九点啦|我又来问问你的早饭";
+            if (strcmp(tag, "ate") == 0) return promptValue("prompt.recall.breakfast.ate", u8"九点啦|上次你有好好吃早饭, 今天也有吗?");
+            if (strcmp(tag, "later") == 0) return promptValue("prompt.recall.breakfast.later", u8"九点啦|上次你说等会吃, 今天别忘啦");
+            if (strcmp(tag, "not_hungry") == 0) return promptValue("prompt.recall.breakfast.not_hungry", u8"九点啦|今天肚子有比较想吃点东西吗?");
+            return promptValue("prompt.recall.breakfast.default", u8"九点啦|我又来问问你的早饭");
         case PromptSlot::LUNCH:
-            if (strcmp(tag, "ate") == 0) return u8"到中午了|上次你有去吃饭, 今天也要记得哦";
-            if (strcmp(tag, "later") == 0) return u8"到中午了|上次你想稍后吃, 今天别拖太久呀";
-            if (strcmp(tag, "not_hungry") == 0) return u8"到中午了|现在有没有比刚才更想吃一点?";
-            return u8"到中午了|想再确认一下你有没有吃饭";
+            if (strcmp(tag, "ate") == 0) return promptValue("prompt.recall.lunch.ate", u8"到中午了|上次你有去吃饭, 今天也要记得哦");
+            if (strcmp(tag, "later") == 0) return promptValue("prompt.recall.lunch.later", u8"到中午了|上次你想稍后吃, 今天别拖太久呀");
+            if (strcmp(tag, "not_hungry") == 0) return promptValue("prompt.recall.lunch.not_hungry", u8"到中午了|现在有没有比刚才更想吃一点?");
+            return promptValue("prompt.recall.lunch.default", u8"到中午了|想再确认一下你有没有吃饭");
         case PromptSlot::DINNER:
-            if (strcmp(tag, "ate") == 0) return u8"傍晚了|你上次有好好吃晚饭, 今晚也继续吗?";
-            if (strcmp(tag, "later") == 0) return u8"傍晚了|这次会不会又想等会再吃呀?";
-            if (strcmp(tag, "not_hungry") == 0) return u8"傍晚了|现在还是不太饿吗?";
-            return u8"傍晚了|想来问问今晚的肚子";
+            if (strcmp(tag, "ate") == 0) return promptValue("prompt.recall.dinner.ate", u8"傍晚了|你上次有好好吃晚饭, 今晚也继续吗?");
+            if (strcmp(tag, "later") == 0) return promptValue("prompt.recall.dinner.later", u8"傍晚了|这次会不会又想等会再吃呀?");
+            if (strcmp(tag, "not_hungry") == 0) return promptValue("prompt.recall.dinner.not_hungry", u8"傍晚了|现在还是不太饿吗?");
+            return promptValue("prompt.recall.dinner.default", u8"傍晚了|想来问问今晚的肚子");
         case PromptSlot::LATE_NIGHT:
-            if (strcmp(tag, "sleep_now") == 0) return u8"已经很晚了|昨晚你有早点睡, 今晚也保持吗?";
-            if (strcmp(tag, "play_more") == 0) return u8"已经很晚了|昨晚你还想再玩会, 今晚也一样吗?";
-            if (strcmp(tag, "awake") == 0) return u8"已经很晚了|你昨天说还不困, 现在呢?";
-            return u8"已经很晚了|今天想早点休息吗?";
+            if (strcmp(tag, "sleep_now") == 0) return promptValue("prompt.recall.late_night.sleep_now", u8"已经很晚了|昨晚你有早点睡, 今晚也保持吗?");
+            if (strcmp(tag, "play_more") == 0) return promptValue("prompt.recall.late_night.play_more", u8"已经很晚了|昨晚你还想再玩会, 今晚也一样吗?");
+            if (strcmp(tag, "awake") == 0) return promptValue("prompt.recall.late_night.awake", u8"已经很晚了|你昨天说还不困, 现在呢?");
+            return promptValue("prompt.recall.late_night.default", u8"已经很晚了|今天想早点休息吗?");
         case PromptSlot::RANDOM_MOOD:
-            if (strcmp(tag, "happy") == 0) return u8"现在心情怎么样?|上次你说挺开心, 今天也一样吗?";
-            if (strcmp(tag, "sad") == 0) return u8"现在心情怎么样?|上次你有点不开心, 今天好一点了吗?";
-            if (strcmp(tag, "unsure") == 0) return u8"现在心情怎么样?|上次你说有点说不上来, 今天呢?";
-            return u8"现在心情怎么样?|想和我再说说吗?";
+            if (strcmp(tag, "happy") == 0) return promptValue("prompt.recall.random_mood.happy", u8"现在心情怎么样?|上次你说挺开心, 今天也一样吗?");
+            if (strcmp(tag, "sad") == 0) return promptValue("prompt.recall.random_mood.sad", u8"现在心情怎么样?|上次你有点不开心, 今天好一点了吗?");
+            if (strcmp(tag, "unsure") == 0) return promptValue("prompt.recall.random_mood.unsure", u8"现在心情怎么样?|上次你说有点说不上来, 今天呢?");
+            return promptValue("prompt.recall.random_mood.default", u8"现在心情怎么样?|想和我再说说吗?");
         default:
             return "";
     }
@@ -527,6 +764,45 @@ const char* Companion::promptSlotRecallQuestion(PromptSlot slot) const {
 const char* Companion::recentMemoryAmbient(const char* category) const {
     static char buf[64];
     buf[0] = '\0';
+
+    char recentLines[6][96] = {{0}};
+    uint8_t recentCount = 0;
+    bool hasRecentLog = PetStorage::loadRecentPetMemoryEvents(petId.c_str(), recentLines, recentCount, 6);
+
+    if (hasRecentLog) {
+        for (int i = recentCount - 1; i >= 0; --i) {
+            const char* line = recentLines[i];
+            if (strcmp(category, "happy") == 0) {
+                if (lineHasAllTokens(line, "action | play_chase")) return u8"刚才追着玩具跑, 现在还想蹦一蹦";
+                if (lineHasAllTokens(line, "action | play")) return u8"你刚才陪我玩过, 我还开心着";
+                if (lineHasAllTokens(line, "reply_quick", "mood\t开心") || lineHasAllTokens(line, "reply_custom", "开心")) {
+                    return u8"想到你刚才说开心, 我也想摇尾巴";
+                }
+            }
+            if (strcmp(category, "idle") == 0) {
+                if (lineHasAllTokens(line, "action | feed")) return u8"刚才吃过东西, 肚子暖暖的";
+                if (lineHasAllTokens(line, "action | clean")) return u8"身上还是香香的, 想慢慢待着";
+                if (lineHasAllTokens(line, "action | nap")) return u8"刚才那一小觉, 睡得挺舒服";
+            }
+            if (strcmp(category, "talk") == 0) {
+                if (lineHasAllTokens(line, "reply_quick", "mood\t不开心") || lineHasAllTokens(line, "reply_custom", "不开心")) {
+                    return u8"要是你还闷闷的, 也可以继续和我说";
+                }
+                if (lineHasAllTokens(line, "reply_quick", "mood\t不知道") || lineHasAllTokens(line, "reply_custom", "不知道")) {
+                    return u8"说不上来也没关系, 我会听着";
+                }
+                if (lineHasAllTokens(line, "prompt | followup:")) {
+                    return u8"我刚刚还在想着要轻轻提醒你";
+                }
+            }
+            if (strcmp(category, "look") == 0) {
+                if (lineHasAllTokens(line, "action | outing_return")) return u8"刚带着一点小见闻回来, 还想再看看";
+                if (lineHasAllTokens(line, "reply_quick", "late\t再玩会") || lineHasAllTokens(line, "reply_custom", "再玩")) {
+                    return u8"你说还想再玩会儿, 我就先陪你看看四周";
+                }
+            }
+        }
+    }
 
     if (strcmp(category, "happy") != 0) return "";
 
@@ -573,31 +849,101 @@ const char* Companion::recentMemoryAmbient(const char* category) const {
 }
 
 const char* const* Companion::promptSlotChoices(PromptSlot slot) const {
-    static const char* morningChoices[3] = {u8"1 早呀", u8"2 还困", u8"3 先忙"};
-    static const char* breakfastChoices[3] = {u8"1 吃了", u8"2 等会吃", u8"3 还不饿"};
-    static const char* lunchChoices[3] = {u8"1 去吃饭", u8"2 稍后吃", u8"3 还不饿"};
-    static const char* dinnerChoices[3] = {u8"1 吃晚饭", u8"2 等会吃", u8"3 吃过啦"};
-    static const char* lateChoices[3] = {u8"1 这就睡", u8"2 再玩会", u8"3 还不困"};
-    static const char* moodChoices[3] = {u8"1 开心", u8"2 不开心", u8"3 不知道"};
+    static char morningChoices[3][24];
+    static char breakfastChoices[3][24];
+    static char lunchChoices[3][24];
+    static char dinnerChoices[3][24];
+    static char lateChoices[3][24];
+    static char moodChoices[3][24];
+    static const char* morningPtrs[3] = {morningChoices[0], morningChoices[1], morningChoices[2]};
+    static const char* breakfastPtrs[3] = {breakfastChoices[0], breakfastChoices[1], breakfastChoices[2]};
+    static const char* lunchPtrs[3] = {lunchChoices[0], lunchChoices[1], lunchChoices[2]};
+    static const char* dinnerPtrs[3] = {dinnerChoices[0], dinnerChoices[1], dinnerChoices[2]};
+    static const char* latePtrs[3] = {lateChoices[0], lateChoices[1], lateChoices[2]};
+    static const char* moodPtrs[3] = {moodChoices[0], moodChoices[1], moodChoices[2]};
+
+    auto fillChoices = [](const char* key, char target[3][24], const char* const defaults[3]) {
+        for (int i = 0; i < 3; ++i) {
+            String entry = PetDialogue::option(key, i);
+            const char* text = entry.length() ? entry.c_str() : defaults[i];
+            strncpy(target[i], text, 23);
+            target[i][23] = '\0';
+        }
+    };
+
+    static const char* morningDefaults[3] = {u8"1 早呀", u8"2 还困", u8"3 先忙"};
+    static const char* breakfastDefaults[3] = {u8"1 吃了", u8"2 等会吃", u8"3 还不饿"};
+    static const char* lunchDefaults[3] = {u8"1 去吃饭", u8"2 稍后吃", u8"3 还不饿"};
+    static const char* dinnerDefaults[3] = {u8"1 吃晚饭", u8"2 等会吃", u8"3 吃过啦"};
+    static const char* lateDefaults[3] = {u8"1 这就睡", u8"2 再玩会", u8"3 还不困"};
+    static const char* moodDefaults[3] = {u8"1 开心", u8"2 不开心", u8"3 不知道"};
 
     switch (slot) {
-        case PromptSlot::MORNING: return morningChoices;
-        case PromptSlot::BREAKFAST: return breakfastChoices;
-        case PromptSlot::LUNCH: return lunchChoices;
-        case PromptSlot::DINNER: return dinnerChoices;
-        case PromptSlot::LATE_NIGHT: return lateChoices;
-        case PromptSlot::RANDOM_MOOD: return moodChoices;
-        default: return morningChoices;
+        case PromptSlot::MORNING:
+            fillChoices("prompt.choices.morning", morningChoices, morningDefaults);
+            return morningPtrs;
+        case PromptSlot::BREAKFAST:
+            fillChoices("prompt.choices.breakfast", breakfastChoices, breakfastDefaults);
+            return breakfastPtrs;
+        case PromptSlot::LUNCH:
+            fillChoices("prompt.choices.lunch", lunchChoices, lunchDefaults);
+            return lunchPtrs;
+        case PromptSlot::DINNER:
+            fillChoices("prompt.choices.dinner", dinnerChoices, dinnerDefaults);
+            return dinnerPtrs;
+        case PromptSlot::LATE_NIGHT:
+            fillChoices("prompt.choices.late_night", lateChoices, lateDefaults);
+            return latePtrs;
+        case PromptSlot::RANDOM_MOOD:
+            fillChoices("prompt.choices.random_mood", moodChoices, moodDefaults);
+            return moodPtrs;
+        default:
+            fillChoices("prompt.choices.morning", morningChoices, morningDefaults);
+            return morningPtrs;
     }
 }
 
 void Companion::triggerScheduledPrompt(PromptSlot slot) {
     if (slot == PromptSlot::NONE || townSyncActive || outingActive || activePromptSlot != PromptSlot::NONE) return;
     loadPromptMemory();
-    activePromptSlot = slot;
-    promptTextEntryActive = false;
-    promptInput[0] = '\0';
-    setTemporaryStatus(promptSlotQuestion(slot), 3000);
+    int dayStamp = currentDayStamp();
+    if (dayStamp < 0) return;
+    if (promptQuietUntil > millis()) return;
+
+    const bool useCard = isPromptCardSlot(slot);
+    if (useCard) {
+        activePromptSlot = slot;
+        promptTextEntryActive = false;
+        promptInput[0] = '\0';
+        setTemporaryStatus(promptSlotQuestion(slot), 3000);
+        promptQuietUntil = millis() + PROMPT_CARD_QUIET_MS;
+    } else {
+        setTemporaryStatus(promptSlotQuestion(slot), 2800);
+        markPromptAsked(slot, dayStamp);
+        promptQuietUntil = millis() + PROMPT_STATUS_QUIET_MS;
+    }
+    switch (slot) {
+        case PromptSlot::MORNING:
+            pushStoryBeat(u8"\u65e9\u4e0a\u6211\u6709\u8ddf\u4f60\u6253\u62db\u547c");
+            break;
+        case PromptSlot::BREAKFAST:
+            pushStoryBeat(u8"\u65e9\u4e0a\u6211\u60f3\u63d0\u9192\u4f60\u5403\u70b9\u4e1c\u897f");
+            break;
+        case PromptSlot::LUNCH:
+            pushStoryBeat(u8"\u4e2d\u5348\u6211\u6709\u60f3\u8d77\u4f60\u7684\u5348\u996d");
+            break;
+        case PromptSlot::DINNER:
+            pushStoryBeat(u8"\u508d\u665a\u6211\u60f3\u8d77\u4f60\u8be5\u5403\u665a\u996d\u4e86");
+            break;
+        case PromptSlot::LATE_NIGHT:
+            pushStoryBeat(u8"\u591c\u91cc\u6211\u8fd8\u5728\u60f3\u7740\u63d0\u9192\u4f60\u4f11\u606f");
+            break;
+        case PromptSlot::RANDOM_MOOD:
+            pushStoryBeat(u8"\u521a\u624d\u6211\u60f3\u95ee\u95ee\u4f60\u73b0\u5728\u5f00\u5fc3\u5417");
+            break;
+        default:
+            break;
+    }
     char detail[96];
     snprintf(detail, sizeof(detail), "prompt:%s", promptSlotMemoryKey(slot));
     PetStorage::appendPetMemoryEvent(petId.c_str(), "prompt", detail);
@@ -619,6 +965,30 @@ void Companion::answerScheduledPrompt(const char* replyText, bool customReply, c
     char detail[160];
     snprintf(detail, sizeof(detail), "%s\t%s", promptSlotMemoryKey(activePromptSlot), replyText);
     PetStorage::appendPetMemoryEvent(petId.c_str(), customReply ? "reply_custom" : "reply_quick", detail);
+    schedulePromptFollowup(activePromptSlot, replyText);
+
+    const char* tag = classifyPromptReply(activePromptSlot, replyText);
+    switch (activePromptSlot) {
+        case PromptSlot::BREAKFAST:
+        case PromptSlot::LUNCH:
+        case PromptSlot::DINNER:
+            if (strcmp(tag, "ate") == 0) pushStoryBeat(u8"\u4f60\u8bf4\u4eca\u5929\u6709\u597d\u597d\u5403\u996d");
+            else if (strcmp(tag, "later") == 0) pushStoryBeat(u8"\u4f60\u8bf4\u7b49\u4f1a\u513f\u518d\u53bb\u5403");
+            else if (strcmp(tag, "not_hungry") == 0) pushStoryBeat(u8"\u4f60\u8bf4\u6682\u65f6\u8fd8\u4e0d\u592a\u997f");
+            break;
+        case PromptSlot::LATE_NIGHT:
+            if (strcmp(tag, "sleep_now") == 0) pushStoryBeat(u8"\u4f60\u8bf4\u7b49\u4f1a\u513f\u5c31\u53bb\u7761");
+            else if (strcmp(tag, "play_more") == 0) pushStoryBeat(u8"\u4f60\u8bf4\u8fd8\u60f3\u518d\u73a9\u4e00\u4f1a\u513f");
+            else if (strcmp(tag, "awake") == 0) pushStoryBeat(u8"\u4f60\u8bf4\u73b0\u5728\u8fd8\u4e0d\u56f0");
+            break;
+        case PromptSlot::RANDOM_MOOD:
+            if (strcmp(tag, "happy") == 0) pushStoryBeat(u8"\u4f60\u8bf4\u521a\u624d\u633a\u5f00\u5fc3");
+            else if (strcmp(tag, "sad") == 0) pushStoryBeat(u8"\u4f60\u8bf4\u521a\u624d\u6709\u70b9\u4e0d\u5f00\u5fc3");
+            else if (strcmp(tag, "unsure") == 0) pushStoryBeat(u8"\u4f60\u8bf4\u5fc3\u60c5\u6709\u70b9\u8bf4\u4e0d\u4e0a\u6765");
+            break;
+        default:
+            break;
+    }
 
     if (feedbackText && feedbackText[0]) {
         setTemporaryStatus(feedbackText, 2600);
@@ -641,20 +1011,23 @@ void Companion::respondToPromptChoice(int choiceIndex) {
     if (activePromptSlot == PromptSlot::RANDOM_MOOD) {
         const char* feedbackText = nullptr;
         if (choiceIndex == 0) {
-            feedbackText = u8"你开心, 我也开心";
+            feedbackText = promptValue("prompt.feedback.random_mood.happy", u8"你开心, 我也开心");
             mood = clampStat(mood + 6);
             bond = clampStat(bond + 5);
         } else if (choiceIndex == 1) {
+            static String comfort;
+            comfort = PetDialogue::pick("prompt", "feedback.random_mood.sad");
+            feedbackText = comfort.length() ? comfort.c_str() : nullptr;
             static const char* comfortLines[] = {
                 u8"抱一下, 会慢慢好起来",
                 u8"那我陪你待一会儿",
                 u8"送你一个小笑话: 喵也会打呼噜"
             };
-            feedbackText = comfortLines[random(3)];
+            if (!feedbackText) feedbackText = comfortLines[random(3)];
             mood = clampStat(mood + 3);
             bond = clampStat(bond + 6);
         } else {
-            feedbackText = u8"那就祝你慢慢开心起来";
+            feedbackText = promptValue("prompt.feedback.random_mood.unsure", u8"那就祝你慢慢开心起来");
             bond = clampStat(bond + 4);
         }
         markPetProgressDirty();
@@ -662,13 +1035,59 @@ void Companion::respondToPromptChoice(int choiceIndex) {
         return;
     }
 
+    if (activePromptSlot == PromptSlot::BREAKFAST ||
+        activePromptSlot == PromptSlot::LUNCH ||
+        activePromptSlot == PromptSlot::DINNER) {
+        const char* feedbackText = nullptr;
+        if (choiceIndex == 0) feedbackText = promptValue("prompt.feedback.meal.done", u8"那就好, 我会放心");
+        else if (choiceIndex == 1) feedbackText = promptValue("prompt.feedback.meal.later", u8"好呀, 等会别忘记");
+        else feedbackText = promptValue("prompt.feedback.meal.not_hungry", u8"那也要记得慢慢照顾肚子");
+        answerScheduledPrompt(storedReply, false, feedbackText);
+        return;
+    }
+
+    if (activePromptSlot == PromptSlot::LATE_NIGHT) {
+        const char* feedbackText = nullptr;
+        if (choiceIndex == 0) feedbackText = promptValue("prompt.feedback.late_night.sleep_now", u8"晚安, 我也安静陪你");
+        else if (choiceIndex == 1) feedbackText = promptValue("prompt.feedback.late_night.play_more", u8"那就再玩一小会儿");
+        else feedbackText = promptValue("prompt.feedback.late_night.awake", u8"不困也要记得放松眼睛");
+        answerScheduledPrompt(storedReply, false, feedbackText);
+        return;
+    }
+
     answerScheduledPrompt(storedReply, false);
+}
+
+const char* Companion::getActivePromptQuestion() const {
+    if (activePromptSlot == PromptSlot::NONE) return "";
+    return promptSlotQuestion(activePromptSlot);
+}
+
+const char* Companion::getActivePromptChoice(uint8_t index) const {
+    if (activePromptSlot == PromptSlot::NONE || index >= 3) return "";
+    const char* const* choices = promptSlotChoices(activePromptSlot);
+    return choices[index] ? choices[index] : "";
+}
+
+bool Companion::answerActivePromptChoice(uint8_t index) {
+    if (activePromptSlot == PromptSlot::NONE || index >= 3) return false;
+    respondToPromptChoice(index);
+    return true;
+}
+
+void Companion::dismissActivePrompt() {
+    if (activePromptSlot == PromptSlot::NONE) return;
+    activePromptSlot = PromptSlot::NONE;
+    promptTextEntryActive = false;
+    promptInput[0] = '\0';
+    promptQuietUntil = millis() + PROMPT_STATUS_QUIET_MS;
+    setTemporaryStatus(u8"那我晚点再问你", 1800);
 }
 
 void Companion::maybePromptOnInteraction() {
     loadPromptMemory();
     if (activePromptSlot != PromptSlot::NONE) return;
-    if (townSyncActive || outingActive) return;
+    if (townSyncActive || outingActive || focusModeActive) return;
 
     int hour = currentHour();
     int dayStamp = currentDayStamp();
@@ -682,7 +1101,10 @@ void Companion::maybePromptOnInteraction() {
 void Companion::updateScheduledPrompt() {
     loadPromptMemory();
     if (!promptTimer.tick()) return;
-    if (activePromptSlot != PromptSlot::NONE || townSyncActive || outingActive) return;
+    if (activePromptSlot != PromptSlot::NONE || townSyncActive || outingActive || focusModeActive) return;
+
+    updatePromptFollowup();
+    if (activePromptSlot != PromptSlot::NONE) return;
 
     int hour = currentHour();
     int dayStamp = currentDayStamp();
@@ -707,6 +1129,81 @@ void Companion::updateScheduledPrompt() {
     if (hour >= 10 && hour < 22 && canTriggerPrompt(PromptSlot::RANDOM_MOOD, dayStamp) && random(100) < 6) {
         triggerScheduledPrompt(PromptSlot::RANDOM_MOOD);
         return;
+    }
+}
+
+void Companion::schedulePromptFollowup(PromptSlot slot, const char* replyText) {
+    int idx = static_cast<int>(slot);
+    if (idx < 0 || idx >= PetStorage::PROMPT_SLOT_COUNT || !replyText || !replyText[0]) return;
+
+    promptFollowupAt[idx] = 0;
+    promptFollowupDayStamp[idx] = currentDayStamp();
+
+    const char* tag = classifyPromptReply(slot, replyText);
+    unsigned long delayMs = 0;
+    switch (slot) {
+        case PromptSlot::BREAKFAST:
+        case PromptSlot::LUNCH:
+        case PromptSlot::DINNER:
+            if (strcmp(tag, "later") == 0) delayMs = 35UL * 60UL * 1000UL;
+            break;
+        case PromptSlot::LATE_NIGHT:
+            if (strcmp(tag, "play_more") == 0 || strcmp(tag, "awake") == 0) {
+                delayMs = 20UL * 60UL * 1000UL;
+            }
+            break;
+        case PromptSlot::RANDOM_MOOD:
+            if (strcmp(tag, "sad") == 0 || strcmp(tag, "unsure") == 0) {
+                delayMs = 45UL * 60UL * 1000UL;
+            }
+            break;
+        default:
+            break;
+    }
+
+    if (delayMs > 0) {
+        promptFollowupAt[idx] = millis() + delayMs;
+    }
+}
+
+void Companion::updatePromptFollowup() {
+    int dayStamp = currentDayStamp();
+    if (dayStamp < 0) return;
+    if (promptQuietUntil > millis()) return;
+
+    auto triggerFollowup = [&](PromptSlot slot, const char* text) {
+        int idx = static_cast<int>(slot);
+        if (idx < 0 || idx >= PetStorage::PROMPT_SLOT_COUNT) return false;
+        if (promptFollowupAt[idx] == 0 || millis() < promptFollowupAt[idx]) return false;
+        if (promptFollowupDayStamp[idx] != dayStamp) return false;
+        setTemporaryStatus(text, 2600);
+        promptFollowupAt[idx] = 0;
+        promptQuietUntil = millis() + PROMPT_STATUS_QUIET_MS;
+        char detail[96];
+        snprintf(detail, sizeof(detail), "followup:%s", promptSlotMemoryKey(slot));
+        PetStorage::appendPetMemoryEvent(petId.c_str(), "prompt", detail);
+        pushStoryBeat(text);
+        return true;
+    };
+
+    int hour = currentHour();
+    const char* mealReply = promptReplies[static_cast<int>(PromptSlot::DINNER)];
+    if (!mealReply[0]) mealReply = promptReplies[static_cast<int>(PromptSlot::LUNCH)];
+    if (!mealReply[0]) mealReply = promptReplies[static_cast<int>(PromptSlot::BREAKFAST)];
+
+    if (triggerFollowup(PromptSlot::BREAKFAST, promptValue("prompt.followup.breakfast", u8"早餐别拖太久哦"))) return;
+    if (hour >= 11 && triggerFollowup(PromptSlot::LUNCH, promptValue("prompt.followup.lunch", u8"记得抽空吃点东西"))) return;
+    if (hour >= 18 && triggerFollowup(PromptSlot::DINNER, promptValue("prompt.followup.dinner", u8"晚一点也要记得吃饭"))) return;
+    if (hour >= 0 && hour < 5 && triggerFollowup(PromptSlot::LATE_NIGHT, promptValue("prompt.followup.late_night", u8"夜深了, 眼睛也想休息"))) return;
+
+    const char* moodReply = promptReplies[static_cast<int>(PromptSlot::RANDOM_MOOD)];
+    if (moodReply[0]) {
+        const char* moodTag = classifyPromptReply(PromptSlot::RANDOM_MOOD, moodReply);
+        if (strcmp(moodTag, "sad") == 0) {
+            if (triggerFollowup(PromptSlot::RANDOM_MOOD, promptValue("prompt.followup.random_mood.sad", u8"如果还闷闷的, 我就在这儿"))) return;
+        } else if (strcmp(moodTag, "unsure") == 0) {
+            if (triggerFollowup(PromptSlot::RANDOM_MOOD, promptValue("prompt.followup.random_mood.unsure", u8"慢慢来也没关系, 我陪你"))) return;
+        }
     }
 }
 
@@ -795,14 +1292,60 @@ void Companion::replaceSouvenirs(const char items[][PetStorage::SOUVENIR_ITEM_LE
 }
 
 void Companion::showActionHelp(unsigned long durationMs) {
+    noteUserAttention();
     (void)durationMs;
     helpPanelVisible = !helpPanelVisible;
     if (helpPanelVisible) statsPanelVisible = false;
 }
 
 void Companion::toggleStatsPanel() {
+    noteUserAttention();
     statsPanelVisible = !statsPanelVisible;
     if (statsPanelVisible) helpPanelVisible = false;
+}
+
+void Companion::toggleFocusMode() {
+    noteUserAttention();
+    maybePromptOnInteraction();
+    if (townSyncActive) {
+        setTemporaryStatus(u8"\u5c0f\u732b\u8fdb\u57ce\u4e86", 1400);
+        return;
+    }
+    if (outingActive) {
+        setTemporaryStatus(u8"\u732b\u54aa\u5916\u51fa\u4e2d", 1400);
+        return;
+    }
+    if (activePromptSlot != PromptSlot::NONE) {
+        setTemporaryStatus(u8"\u5148\u56de\u7b54\u5c0f\u732b", 1600);
+        return;
+    }
+    if (focusModeActive) {
+        focusModeActive = false;
+        focusModeStartedAt = 0;
+        focusModeEndsAt = 0;
+        focusModeLastWarnAt = 0;
+        setTemporaryStatus(u8"\u5148\u4f11\u606f\u4e00\u4f1a", 1800);
+        showNotification(u8"\u732b\u54aa", u8"\u4e13\u6ce8\u6682\u505c", u8"\u6211\u8fd8\u5728\u8fd9\u91cc");
+        return;
+    }
+    if (energy < 18) {
+        setTemporaryStatus(u8"\u5148\u7761\u9971\u4e86\u518d\u4e13\u6ce8", 1800);
+        return;
+    }
+    focusModeActive = true;
+    focusModeStartedAt = millis();
+    focusModeEndsAt = focusModeStartedAt + FOCUS_DURATION_MS;
+    focusModeLastWarnAt = 0;
+    setTemporaryStatus(u8"\u5f00\u59cb\u4e13\u6ce8\u4e86", 1800);
+    showNotification(u8"\u732b\u54aa", u8"\u4e13\u6ce8\u6a21\u5f0f", u8"\u6211\u966a\u4f60\u4e8c\u5341\u4e94\u5206\u949f");
+}
+
+void Companion::handleFocusInterrupt() {
+    if (!focusModeActive) return;
+    unsigned long now = millis();
+    if (focusModeLastWarnAt != 0 && now - focusModeLastWarnAt < FOCUS_WARN_COOLDOWN_MS) return;
+    focusModeLastWarnAt = now;
+    setTemporaryStatus(u8"\u4e13\u5fc3\u54e6,\u6211\u966a\u7740\u4f60", 1800);
 }
 
 void Companion::updatePetNeeds() {
@@ -849,6 +1392,24 @@ void Companion::updatePetNeeds() {
     savePetProgress(false);
 }
 
+void Companion::updateFocusMode() {
+    if (!focusModeActive) return;
+    if (millis() < focusModeEndsAt) return;
+
+    focusModeActive = false;
+    focusModeStartedAt = 0;
+    focusModeEndsAt = 0;
+    focusModeLastWarnAt = 0;
+    mood = clampStat(mood + 10);
+    bond = clampStat(bond + 8);
+    energy = clampStat(energy - 2);
+    markPetProgressDirty();
+    triggerHappy();
+    setTemporaryStatus(u8"\u4e13\u6ce8\u5b8c\u6210\u5566", 2200);
+    pushStoryBeat(u8"\u521a\u624d\u966a\u4f60\u4e13\u5fc3\u4e86\u4e00\u9635");
+    showNotification(u8"\u732b\u54aa", u8"\u4e13\u6ce8\u7ed3\u675f", u8"\u8fd9\u6b21\u4f60\u4eec\u90fd\u5f88\u68d2");
+}
+
 void Companion::initStars() {
     for (int i = 0; i < MAX_STARS; i++) {
         stars[i].x = random(10, SCREEN_W - 10);
@@ -888,6 +1449,7 @@ void Companion::clearPromptTestHour() {
 }
 
 void Companion::triggerMoodPromptTest() {
+    noteUserAttention();
     triggerScheduledPrompt(PromptSlot::RANDOM_MOOD);
 }
 
@@ -970,9 +1532,7 @@ void Companion::trySpontaneousAction() {
     spontaneousTimer.setInterval(8000 + random(7000));
 }
 
-void Companion::update(M5Canvas& canvas) {
-    canvas.setFont(&fonts::efontCN_12);
-    canvas.setTextSize(1);
+void Companion::tick() {
     // Advance animation frame
     if (animTimer.tick()) {
         frameIndex++;
@@ -1015,9 +1575,10 @@ void Companion::update(M5Canvas& canvas) {
 
     if (!townSyncActive) {
         updateMoisture();
-    updatePetNeeds();
-    updateScheduledPrompt();
-    updateToyGame();
+        updatePetNeeds();
+        updateFocusMode();
+        updateScheduledPrompt();
+        updateToyGame();
         updateOuting();
         trySpontaneousAction();
     }
@@ -1027,10 +1588,17 @@ void Companion::update(M5Canvas& canvas) {
         int idx = random(MAX_STARS);
         stars[idx].visible = !stars[idx].visible;
     }
+}
+
+void Companion::update(M5Canvas& canvas) {
+    canvas.setFont(&fonts::efontCN_12);
+    canvas.setTextSize(1);
+    tick();
 
     // Draw everything
     drawBackground(canvas);
     drawCharacter(canvas);
+    drawFocusBubble(canvas);
     drawSleepZ(canvas);
     drawToyGame(canvas);
     drawOutingScene(canvas);
@@ -1048,6 +1616,7 @@ void Companion::update(M5Canvas& canvas) {
 void Companion::handleKey(char key) {
     if (townSyncActive) return;
     idleTimeout.reset();
+    noteUserAttention();
 
     if (handlePromptKey(key, key == '\n', false, false)) return;
     maybePromptOnInteraction();
@@ -1071,7 +1640,8 @@ void Companion::handleKey(char key) {
     }
 }
 
-void Companion::feed() {
+void Companion::feed(bool visualFeedback) {
+    noteUserAttention();
     maybePromptOnInteraction();
     if (townSyncActive) {
         setTemporaryStatus(u8"\u5c0f\u732b\u8fdb\u57ce\u4e86", 1400);
@@ -1097,12 +1667,16 @@ void Companion::feed() {
     lastFeedTime = millis();
     markPetProgressDirty();
     PetStorage::appendEventLog("action", "feed");
+    pushStoryBeat(u8"\u6211\u521a\u5403\u5230\u4e86\u4e00\u70b9\u597d\u5403\u7684");
     setTemporaryStatus(u8"\u5494\u568f\u5494\u568f");
-    triggerHappy();
-    showNotification(u8"\u732b\u54aa", u8"\u5403\u70b9\u5fc3", u8"\u9971\u8179\u4e0a\u5347");
+    if (visualFeedback) {
+        triggerHappy();
+        showNotification(u8"\u732b\u54aa", u8"\u5403\u70b9\u5fc3", u8"\u9971\u8179\u4e0a\u5347");
+    }
 }
 
-void Companion::play() {
+void Companion::play(bool visualFeedback) {
+    noteUserAttention();
     maybePromptOnInteraction();
     if (townSyncActive) {
         setTemporaryStatus(u8"\u5c0f\u732b\u8fdb\u57ce\u4e86", 1400);
@@ -1124,20 +1698,25 @@ void Companion::play() {
         setTemporaryStatus(u8"\u5df2\u7ecf\u5f88\u5f00\u5fc3", 1400);
         return;
     }
-    mood = clampStat(mood + 18);
-    fullness = clampStat(fullness - 6);
-    energy = clampStat(energy - 12);
-    cleanliness = clampStat(cleanliness - 8);
-    bond = clampStat(bond + 4);
+    bool chasedToy = random(100) < 55;
+    mood = clampStat(mood + (chasedToy ? 22 : 18));
+    fullness = clampStat(fullness - (chasedToy ? 7 : 6));
+    energy = clampStat(energy - (chasedToy ? 14 : 12));
+    cleanliness = clampStat(cleanliness - (chasedToy ? 9 : 8));
+    bond = clampStat(bond + (chasedToy ? 6 : 4));
     lastPlayTime = millis();
     markPetProgressDirty();
-    PetStorage::appendEventLog("action", "play");
-    setTemporaryStatus(u8"\u6492\u6b22\u5566!");
-    triggerHappy();
-    showNotification(u8"\u732b\u54aa", u8"\u73a9\u800d\u65f6\u95f4", u8"\u5fc3\u60c5\u4e0a\u5347");
+    PetStorage::appendEventLog("action", chasedToy ? "play_chase" : "play");
+    pushStoryBeat(chasedToy ? u8"\u6211\u521a\u8ffd\u7740\u73a9\u5177\u8dd1\u4e86\u51e0\u5708" : u8"\u6211\u521a\u6492\u6b22\u73a9\u4e86\u4e00\u4f1a\u513f");
+    setTemporaryStatus(chasedToy ? u8"\u8ffd\u7740\u73a9\u5177\u8dd1!" : u8"\u6492\u6b22\u5566!");
+    if (visualFeedback) {
+        triggerHappy();
+        showNotification(u8"\u732b\u54aa", u8"\u73a9\u800d\u65f6\u95f4", chasedToy ? u8"\u8ffd\u7740\u73a9\u5177\u8dd1\u4e86\u597d\u51e0\u5708" : u8"\u5fc3\u60c5\u4e0a\u5347");
+    }
 }
 
-void Companion::nap() {
+void Companion::nap(bool visualFeedback) {
+    noteUserAttention();
     maybePromptOnInteraction();
     if (townSyncActive) {
         setTemporaryStatus(u8"\u5c0f\u732b\u8fdb\u57ce\u4e86", 1400);
@@ -1161,12 +1740,16 @@ void Companion::nap() {
     bond = clampStat(bond + 1);
     markPetProgressDirty();
     PetStorage::appendEventLog("action", "nap");
+    pushStoryBeat(u8"\u6211\u521a\u6253\u4e86\u4e00\u4e2a\u5c0f\u76f9");
     setTemporaryStatus(u8"\u6253\u4e2a\u5c0f\u76f9");
-    triggerSleep();
-    showNotification(u8"\u732b\u54aa", u8"\u5c0f\u7761\u4e00\u4f1a", u8"\u4f53\u529b\u4e0a\u5347");
+    if (visualFeedback) {
+        triggerSleep();
+        showNotification(u8"\u732b\u54aa", u8"\u5c0f\u7761\u4e00\u4f1a", u8"\u4f53\u529b\u4e0a\u5347");
+    }
 }
 
-void Companion::cleanUp() {
+void Companion::cleanUp(bool visualFeedback) {
+    noteUserAttention();
     maybePromptOnInteraction();
     if (townSyncActive) {
         setTemporaryStatus(u8"\u5c0f\u732b\u8fdb\u57ce\u4e86", 1400);
@@ -1191,12 +1774,16 @@ void Companion::cleanUp() {
     lastCleanTime = millis();
     markPetProgressDirty();
     PetStorage::appendEventLog("action", "cleanup");
+    pushStoryBeat(u8"\u6211\u73b0\u5728\u88ab\u6536\u62fe\u5f97\u9999\u9999\u7684");
     setTemporaryStatus(u8"\u6d17\u9999\u9999\u5566");
-    triggerHappy();
-    showNotification(u8"\u732b\u54aa", u8"\u6e05\u7406\u5b8c\u6210", u8"\u722a\u722a\u4eae\u6676\u6676");
+    if (visualFeedback) {
+        triggerHappy();
+        showNotification(u8"\u732b\u54aa", u8"\u6e05\u7406\u5b8c\u6210", u8"\u722a\u722a\u4eae\u6676\u6676");
+    }
 }
 
 void Companion::startToyGame() {
+    noteUserAttention();
     maybePromptOnInteraction();
     if (townSyncActive) {
         setTemporaryStatus(u8"\u5c0f\u732b\u8fdb\u57ce\u4e86", 1400);
@@ -1229,6 +1816,7 @@ void Companion::startToyGame() {
 }
 
 void Companion::startOuting() {
+    noteUserAttention();
     maybePromptOnInteraction();
     if (townSyncActive) {
         setTemporaryStatus(u8"\u5c0f\u732b\u8fdb\u57ce\u4e86", 1400);
@@ -1253,6 +1841,7 @@ void Companion::startOuting() {
     mood = clampStat(mood + 3);
     markPetProgressDirty();
     PetStorage::appendEventLog("action", "outing_start");
+    pushStoryBeat(u8"\u6211\u521a\u51fa\u95e8\u95f2\u901b\u4e86\u4e00\u8d9f");
     setTemporaryStatus(u8"\u51fa\u95e8\u6e9c\u8fbe\u5566");
     showNotification(u8"\u732b\u54aa", u8"\u5916\u51fa\u4e2d", u8"\u5f88\u5feb\u56de\u6765");
 }
@@ -1350,10 +1939,12 @@ void Companion::move(int dx, int dy) {
     charY += dy * step;
 
     // Clamp to bounds
+    const int moveMaxX = moveMaxXForKind(petKind);
+    const int moveMaxY = moveMaxYForKind(petKind);
     if (charX < MOVE_MIN_X) charX = MOVE_MIN_X;
-    if (charX > MOVE_MAX_X) charX = MOVE_MAX_X;
+    if (charX > moveMaxX) charX = moveMaxX;
     if (charY < MOVE_MIN_Y) charY = MOVE_MIN_Y;
-    if (charY > MOVE_MAX_Y) charY = MOVE_MAX_Y;
+    if (charY > moveMaxY) charY = moveMaxY;
 
     // Update facing direction
     if (dx < 0) facingLeft = true;
@@ -1368,8 +1959,8 @@ void Companion::move(int dx, int dy) {
     }
 
     if (toyGameActive) {
-        int catCenterX = charX + CHAR_DRAW_W / 2;
-        int catCenterY = charY + CHAR_DRAW_H / 2;
+        int catCenterX = charX + charDrawWidthForKind(petKind) / 2;
+        int catCenterY = charY + charDrawHeightForKind(petKind) / 2;
         int distX = abs(catCenterX - toyTargetX);
         int distY = abs(catCenterY - toyTargetY);
         if (distX <= 18 && distY <= 18) {
@@ -1393,33 +1984,35 @@ void Companion::move(int dx, int dy) {
 }
 
 float Companion::getNormX() const {
-    if (MOVE_MAX_X <= MOVE_MIN_X) return 0.5f;
-    return (float)(charX - MOVE_MIN_X) / (MOVE_MAX_X - MOVE_MIN_X);
+    int moveMaxX = moveMaxXForKind(petKind);
+    if (moveMaxX <= MOVE_MIN_X) return 0.5f;
+    return (float)(charX - MOVE_MIN_X) / (moveMaxX - MOVE_MIN_X);
 }
 
 float Companion::getNormY() const {
-    if (MOVE_MAX_Y <= MOVE_MIN_Y) return 0.5f;
-    return (float)(charY - MOVE_MIN_Y) / (MOVE_MAX_Y - MOVE_MIN_Y);
+    int moveMaxY = moveMaxYForKind(petKind);
+    if (moveMaxY <= MOVE_MIN_Y) return 0.5f;
+    return (float)(charY - MOVE_MIN_Y) / (moveMaxY - MOVE_MIN_Y);
 }
 
 // ── Sound Effects ──
 
 void Companion::playKeyClick() {
-    M5Cardputer.Speaker.tone(800, 30);
+    M5DEVICE.Speaker.tone(800, 20, 0);
 }
 
 void Companion::playNotification() {
-    M5Cardputer.Speaker.tone(1200, 80);
+    M5DEVICE.Speaker.tone(1200, 50, 0);
     delay(100);
-    M5Cardputer.Speaker.tone(1600, 80);
+    M5DEVICE.Speaker.tone(1600, 50, 0);
 }
 
 void Companion::playHappy() {
-    M5Cardputer.Speaker.tone(1000, 50);
+    M5DEVICE.Speaker.tone(1000, 35, 0);
     delay(60);
-    M5Cardputer.Speaker.tone(1400, 50);
+    M5DEVICE.Speaker.tone(1400, 35, 0);
     delay(60);
-    M5Cardputer.Speaker.tone(1800, 80);
+    M5DEVICE.Speaker.tone(1800, 50, 0);
 }
 
 // ── Drawing ──
@@ -1693,6 +2286,8 @@ void Companion::drawCharacter(M5Canvas& canvas) {
     }
 
     if (frame) {
+        const int drawW = sprites.spriteW * sprites.scale;
+        const int drawH = sprites.spriteH * sprites.scale;
         int yOffset = 0;
         int xOffset = 0;
 
@@ -1709,9 +2304,13 @@ void Companion::drawCharacter(M5Canvas& canvas) {
             yOffset = -3;
         }
 
-        drawSprite16(canvas, charX + xOffset, charY + yOffset, frame, facingLeft);
-        drawConditionEffects(canvas, charX + xOffset, charY + yOffset);
-        drawAccessory(canvas, charX + xOffset, charY + yOffset);
+        int drawAreaW = charDrawWidthForKind(petKind);
+        int drawAreaH = charDrawHeightForKind(petKind);
+        int drawX = charX + xOffset + (drawAreaW - drawW) / 2;
+        int drawY = charY + yOffset + (drawAreaH - drawH) / 2;
+        drawSprite(canvas, drawX, drawY, frame, sprites.spriteW, sprites.spriteH, sprites.scale, facingLeft);
+        drawConditionEffects(canvas, drawX, drawY);
+        drawAccessory(canvas, drawX, drawY);
     }
 }
 
@@ -1748,14 +2347,14 @@ void Companion::drawConditionEffects(M5Canvas& canvas, int drawX, int drawY) {
     }
 }
 
-void Companion::drawSprite16(M5Canvas& canvas, int x, int y, const uint16_t* data, bool flip) {
-    for (int py = 0; py < CHAR_H; py++) {
-        for (int px = 0; px < CHAR_W; px++) {
-            int srcX = flip ? (CHAR_W - 1 - px) : px;
-            uint16_t color = pgm_read_word(&data[py * CHAR_W + srcX]);
+void Companion::drawSprite(M5Canvas& canvas, int x, int y, const uint16_t* data,
+                           int width, int height, int scale, bool flip) {
+    for (int py = 0; py < height; py++) {
+        for (int px = 0; px < width; px++) {
+            int srcX = flip ? (width - 1 - px) : px;
+            uint16_t color = pgm_read_word(&data[py * width + srcX]);
             if (color != Color::TRANSPARENT) {
-                canvas.fillRect(x + px * CHAR_SCALE, y + py * CHAR_SCALE,
-                               CHAR_SCALE, CHAR_SCALE, color);
+                canvas.fillRect(x + px * scale, y + py * scale, scale, scale, color);
             }
         }
     }
@@ -1839,38 +2438,54 @@ void Companion::drawSleepZ(M5Canvas& canvas) {
 
     unsigned long elapsed = millis() - stateStartTime;
     int phase = (elapsed / 600) % 4;
+    int drawW = charDrawWidthForKind(petKind);
 
     canvas.setTextColor(Color::CLOCK_TEXT);
 
     if (phase >= 1) {
         canvas.setTextSize(1);
-        canvas.drawString("z", charX + CHAR_DRAW_W + 4, charY + 10);
+        canvas.drawString("z", charX + drawW + 4, charY + 10);
     }
     if (phase >= 2) {
         canvas.setTextSize(1);
-        canvas.drawString("Z", charX + CHAR_DRAW_W + 10, charY);
+        canvas.drawString("Z", charX + drawW + 10, charY);
     }
     if (phase >= 3) {
         canvas.setTextSize(2);
-        canvas.drawString("Z", charX + CHAR_DRAW_W + 16, charY - 12);
+        canvas.drawString("Z", charX + drawW + 16, charY - 12);
     }
 }
 
 void Companion::drawStatusText(M5Canvas& canvas) {
     const char* statusStr = "";
     auto useAmbientCategory = [&](const char* category) {
-        if (strcmp(ambientStatusCategory, category) != 0 || ambientStatus[0] == '\0') {
+        if (ambientStatusRefreshPending || ambientStatus[0] == '\0') {
             const char* picked = personalityAmbient(category);
+            const char* memoryPicked = recentMemoryAmbient(category);
+            if (memoryPicked[0]) {
+                int odds = 0;
+                if (strcmp(category, "idle") == 0) odds = 24;
+                else if (strcmp(category, "talk") == 0) odds = 20;
+                else if (strcmp(category, "look") == 0) odds = 16;
+                else if (strcmp(category, "lonely") == 0) odds = 12;
+                if (odds > 0 && random(100) < odds) {
+                    picked = memoryPicked;
+                }
+            }
             strncpy(ambientStatus, picked, sizeof(ambientStatus) - 1);
             ambientStatus[sizeof(ambientStatus) - 1] = '\0';
             strncpy(ambientStatusCategory, category, sizeof(ambientStatusCategory) - 1);
             ambientStatusCategory[sizeof(ambientStatusCategory) - 1] = '\0';
+            ambientStatusUntil = millis();
+            ambientStatusRefreshPending = false;
         }
         return ambientStatus;
     };
 
     if (temporaryStatusUntil > millis() && temporaryStatus[0] != '\0') {
         statusStr = temporaryStatus;
+    } else if (focusModeActive) {
+        statusStr = u8"\u4e13\u6ce8\u4e2d";
     } else if (outingActive) {
         statusStr = u8"\u6b63\u5728\u5916\u51fa";
     } else if (toyGameActive) {
@@ -1898,11 +2513,17 @@ void Companion::drawStatusText(M5Canvas& canvas) {
         }
     }
 
-    canvas.setTextColor(Color::STATUS_DIM);
-    canvas.setTextSize(1);
-    canvas.drawString(statusStr, 4, 4);
-
     int tabX = SCREEN_W - 60;
+    int textW = canvas.textWidth(statusStr);
+    int pillW = textW + 10;
+    int maxPillW = tabX - 8;
+    if (pillW > maxPillW) pillW = maxPillW;
+    canvas.fillRoundRect(2, 2, pillW, 12, 4, rgb565(34, 38, 42));
+    canvas.drawRoundRect(2, 2, pillW, 12, 4, rgb565(74, 80, 88));
+    canvas.setTextColor(rgb565(236, 238, 242));
+    canvas.setTextSize(1);
+    canvas.drawString(statusStr, 6, 4);
+
     int dropsX = tabX - 4 - (4 * 7);
     drawBondHearts(canvas, dropsX, 4);
     canvas.setTextColor(Color::STATUS_DIM);
@@ -1967,7 +2588,7 @@ void Companion::drawActionBar(M5Canvas& canvas) {
     canvas.drawString(u8"P \u73a9\u4e50", x + 82, y + 26);
     canvas.drawString(u8"N \u5c0f\u7761", x + 10, y + 38);
     canvas.drawString(u8"C \u6e05\u7406", x + 82, y + 38);
-    canvas.drawString(u8"G \u6e38\u620f", x + 10, y + 50);
+    canvas.drawString(u8"G \u4e13\u6ce8", x + 10, y + 50);
     canvas.drawString(u8"O \u5916\u51fa", x + 82, y + 50);
     canvas.drawString(u8"V \u7eaa\u5ff5", x + 10, y + 62);
     canvas.drawString(u8"T \u8fdb\u57ce", x + 82, y + 62);
@@ -2021,8 +2642,8 @@ void Companion::drawStatsPanel(M5Canvas& canvas) {
         canvas.drawString(valueBuf, x + 108, rowY);
     }
 
-    int battery = M5Cardputer.Power.getBatteryLevel();
-    bool charging = M5Cardputer.Power.isCharging();
+    int battery = M5DEVICE.Power.getBatteryLevel();
+    bool charging = M5DEVICE.Power.isCharging();
     int infoY = y + 84;
     canvas.setTextColor(Color::BLACK);
     canvas.drawString(u8"\u7535\u91cf", x + 8, infoY);
@@ -2073,6 +2694,39 @@ void Companion::drawPromptCard(M5Canvas& canvas) {
     canvas.drawString(choices[2], x + 10, y + 60);
     canvas.setTextColor(rgb565(95, 86, 78));
     canvas.drawString(u8"R 自己输入", x + 72, y + 60);
+}
+
+void Companion::drawFocusBubble(M5Canvas& canvas) {
+    if (!focusModeActive || townSyncActive || outingActive) return;
+
+    unsigned long remainingMs = (focusModeEndsAt > millis()) ? (focusModeEndsAt - millis()) : 0;
+    int minutes = (int)(remainingMs / 60000UL);
+    int seconds = (int)((remainingMs / 1000UL) % 60UL);
+    char text[32];
+    snprintf(text, sizeof(text), u8"\u4e13\u6ce8 %02d:%02d", minutes, seconds);
+
+    int bubbleW = canvas.textWidth(text) + 16;
+    int bubbleH = 16;
+    int bubbleX = charX + (charDrawWidthForKind(petKind) - bubbleW) / 2;
+    if (bubbleX < 4) bubbleX = 4;
+    if (bubbleX + bubbleW > SCREEN_W - 4) bubbleX = SCREEN_W - 4 - bubbleW;
+    int bubbleY = charY - 18;
+    if (bubbleY < 18) bubbleY = 18;
+
+    canvas.fillRoundRect(bubbleX, bubbleY, bubbleW, bubbleH, 6, rgb565(247, 240, 224));
+    canvas.drawRoundRect(bubbleX, bubbleY, bubbleW, bubbleH, 6, rgb565(145, 128, 104));
+    canvas.fillTriangle(bubbleX + bubbleW / 2 - 3, bubbleY + bubbleH,
+                        bubbleX + bubbleW / 2 + 3, bubbleY + bubbleH,
+                        bubbleX + bubbleW / 2, bubbleY + bubbleH + 4,
+                        rgb565(247, 240, 224));
+    canvas.drawLine(bubbleX + bubbleW / 2 - 3, bubbleY + bubbleH,
+                    bubbleX + bubbleW / 2, bubbleY + bubbleH + 4,
+                    rgb565(145, 128, 104));
+    canvas.drawLine(bubbleX + bubbleW / 2 + 3, bubbleY + bubbleH,
+                    bubbleX + bubbleW / 2, bubbleY + bubbleH + 4,
+                    rgb565(145, 128, 104));
+    canvas.setTextColor(rgb565(78, 66, 50));
+    canvas.drawString(text, bubbleX + 8, bubbleY + 4);
 }
 
 void Companion::drawQuickHint(M5Canvas& canvas) {
@@ -2244,8 +2898,12 @@ void Companion::drawSouvenirViewer(M5Canvas& canvas) {
 
 
 void Companion::placeToyTarget() {
-    toyTargetX = random(MOVE_MIN_X + 12, MOVE_MAX_X + CHAR_DRAW_W - 12);
-    toyTargetY = random(MOVE_MIN_Y + 12, MOVE_MAX_Y + CHAR_DRAW_H - 12);
+    const int drawW = charDrawWidthForKind(petKind);
+    const int drawH = charDrawHeightForKind(petKind);
+    const int moveMaxX = moveMaxXForKind(petKind);
+    const int moveMaxY = moveMaxYForKind(petKind);
+    toyTargetX = random(MOVE_MIN_X + 12, moveMaxX + drawW - 12);
+    toyTargetY = random(MOVE_MIN_Y + 12, moveMaxY + drawH - 12);
 }
 
 void Companion::updateToyGame() {
@@ -2324,6 +2982,7 @@ void Companion::updateOuting() {
     lastOutingFind[sizeof(lastOutingFind) - 1] = 0;
     pushSouvenir(souvenirToken, note);
     PetStorage::appendEventLog("action", "outing_return");
+    pushStoryBeat(gotPhoto ? u8"\u6211\u521a\u5e26\u56de\u6765\u4e00\u5f20\u5c0f\u7167\u7247" : u8"\u6211\u521a\u5e26\u56de\u6765\u4e00\u70b9\u5c0f\u7eaa\u5ff5");
     souvenirViewIndex = 0;
     souvenirViewerUntil = millis() + 5000;
     mood = clampStat(mood + 10);

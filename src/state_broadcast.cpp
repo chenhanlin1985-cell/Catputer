@@ -46,19 +46,29 @@ void stateBroadcastBegin(const char* target) {
 void stateBroadcastTick(int state, int frame, const char* mode,
                         float normX, float normY, int direction,
                         int weatherType, float temperature,
-                        int moisture, int humidity) {
+                        int moisture, int humidity,
+                        const char* deviceId, const char* deviceType,
+                        int capTouch, int capKeyboard, int capMic, int capSpeaker) {
     if (!broadcastTimer.tick()) return;
 
-    char buf[128];
+    char buf[256];
     int len;
+    const char* did = (deviceId && deviceId[0]) ? deviceId : "unknown";
+    const char* dt = (deviceType && deviceType[0]) ? deviceType : "unknown";
+    int touch = capTouch < 0 ? 0 : capTouch;
+    int keyboard = capKeyboard < 0 ? 0 : capKeyboard;
+    int mic = capMic < 0 ? 0 : capMic;
+    int speaker = capSpeaker < 0 ? 0 : capSpeaker;
     if (temperature > -999) {
         len = snprintf(buf, sizeof(buf),
-            "{\"s\":%d,\"f\":%d,\"m\":\"%s\",\"x\":%.2f,\"y\":%.2f,\"d\":%d,\"w\":%d,\"t\":%.1f,\"h\":%d,\"rh\":%d}",
-            state, frame, mode, normX, normY, direction, weatherType, temperature, moisture, humidity);
+            "{\"s\":%d,\"f\":%d,\"m\":\"%s\",\"x\":%.2f,\"y\":%.2f,\"d\":%d,\"w\":%d,\"t\":%.1f,\"h\":%d,\"rh\":%d,\"did\":\"%s\",\"dt\":\"%s\",\"tc\":%d,\"kc\":%d,\"mc\":%d,\"sp\":%d}",
+            state, frame, mode, normX, normY, direction, weatherType, temperature, moisture, humidity,
+            did, dt, touch, keyboard, mic, speaker);
     } else {
         len = snprintf(buf, sizeof(buf),
-            "{\"s\":%d,\"f\":%d,\"m\":\"%s\",\"x\":%.2f,\"y\":%.2f,\"d\":%d,\"w\":%d,\"h\":%d,\"rh\":%d}",
-            state, frame, mode, normX, normY, direction, weatherType, moisture, humidity);
+            "{\"s\":%d,\"f\":%d,\"m\":\"%s\",\"x\":%.2f,\"y\":%.2f,\"d\":%d,\"w\":%d,\"h\":%d,\"rh\":%d,\"did\":\"%s\",\"dt\":\"%s\",\"tc\":%d,\"kc\":%d,\"mc\":%d,\"sp\":%d}",
+            state, frame, mode, normX, normY, direction, weatherType, moisture, humidity,
+            did, dt, touch, keyboard, mic, speaker);
     }
 
     if (len >= (int)sizeof(buf)) len = sizeof(buf) - 1;

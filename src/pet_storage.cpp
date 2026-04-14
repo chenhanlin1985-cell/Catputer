@@ -1,17 +1,27 @@
 #include "pet_storage.h"
 
-#include <SPI.h>
-#include <SD.h>
 #include <FS.h>
 #include <time.h>
 
+#if defined(CATPUTER_WAVESHARE_AMOLED_18)
+#include <SD_MMC.h>
+#include <pin_config.h>
+#define PET_FS SD_MMC
+#else
+#include <SPI.h>
+#include <SD.h>
+#define PET_FS SD
+#endif
+
 namespace {
+#if !defined(CATPUTER_WAVESHARE_AMOLED_18)
     constexpr int SD_SPI_SCK_PIN  = 40;
     constexpr int SD_SPI_MISO_PIN = 39;
     constexpr int SD_SPI_MOSI_PIN = 14;
     constexpr int SD_SPI_CS_PIN   = 12;
 
     SPIClass petStorageSpi(FSPI);
+#endif
     bool sdReady = false;
 
     const char* PET_DIR = "/pet";
@@ -20,11 +30,11 @@ namespace {
     const char* MEMORY_DIR = "/pet/memory";
 
     void ensureDir() {
-        if (!SD.exists(PET_DIR)) {
-            SD.mkdir(PET_DIR);
+        if (!PET_FS.exists(PET_DIR)) {
+            PET_FS.mkdir(PET_DIR);
         }
-        if (!SD.exists(MEMORY_DIR)) {
-            SD.mkdir(MEMORY_DIR);
+        if (!PET_FS.exists(MEMORY_DIR)) {
+            PET_FS.mkdir(MEMORY_DIR);
         }
     }
 
@@ -69,17 +79,69 @@ namespace {
     String memoryLogPathForPet(const char* petId) {
         return String(MEMORY_DIR) + "/" + sanitizePetId(petId) + ".log";
     }
+
+    bool rewriteTailFile(const String& path, const String& newLine, uint8_t maxLines) {
+        if (maxLines == 0) return false;
+
+        static constexpr uint8_t kMaxBufferedLines = 48;
+        if (maxLines > kMaxBufferedLines) maxLines = kMaxBufferedLines;
+
+        String recent[kMaxBufferedLines];
+        uint16_t seen = 0;
+
+        if (PET_FS.exists(path)) {
+            File readFile = PET_FS.open(path, FILE_READ);
+            if (readFile) {
+                while (readFile.available()) {
+                    String line = readFile.readStringUntil('\n');
+                    line.trim();
+                    if (line.length() == 0) continue;
+                    recent[seen % maxLines] = line;
+                    seen++;
+                }
+                readFile.close();
+            }
+        }
+
+        recent[seen % maxLines] = newLine;
+        seen++;
+
+        if (PET_FS.exists(path)) {
+            PET_FS.remove(path);
+        }
+        File writeFile = PET_FS.open(path, FILE_WRITE);
+        if (!writeFile) return false;
+
+        uint8_t available = seen < maxLines ? static_cast<uint8_t>(seen) : maxLines;
+        uint16_t start = seen > available ? (seen - available) : 0;
+        for (uint8_t i = 0; i < available; i++) {
+            uint8_t idx = (start + i) % maxLines;
+            writeFile.print(recent[idx]);
+            writeFile.print('\n');
+        }
+        writeFile.close();
+        return true;
+    }
 }
 
 bool PetStorage::begin() {
+#if defined(CATPUTER_WAVESHARE_AMOLED_18)
+    SD_MMC.setPins(SDMMC_CLK, SDMMC_CMD, SDMMC_DATA);
+    if (!SD_MMC.begin("/sdcard", true)) {
+        sdReady = false;
+        Serial.println("[SD] SD_MMC init failed");
+        return false;
+    }
+#else
     petStorageSpi.begin(SD_SPI_SCK_PIN, SD_SPI_MISO_PIN, SD_SPI_MOSI_PIN, SD_SPI_CS_PIN);
     if (!SD.begin(SD_SPI_CS_PIN, petStorageSpi, 25000000)) {
         sdReady = false;
         Serial.println("[SD] init failed");
         return false;
     }
+#endif
 
-    if (SD.cardType() == CARD_NONE) {
+    if (PET_FS.cardType() == CARD_NONE) {
         sdReady = false;
         Serial.println("[SD] no card");
         return false;
@@ -87,7 +149,7 @@ bool PetStorage::begin() {
 
     ensureDir();
     sdReady = true;
-    Serial.printf("[SD] ready, size=%lluMB\n", SD.cardSize() / (1024ULL * 1024ULL));
+    Serial.printf("[SD] ready, size=%lluMB\n", PET_FS.cardSize() / (1024ULL * 1024ULL));
     return true;
 }
 
@@ -95,11 +157,20 @@ bool PetStorage::isAvailable() {
     return sdReady;
 }
 
+fs::FS& PetStorage::fs() {
+    return PET_FS;
+}
+
+uint64_t PetStorage::cardSizeMB() {
+    if (!sdReady) return 0;
+    return PET_FS.cardSize() / (1024ULL * 1024ULL);
+}
+
 bool PetStorage::loadSouvenirs(char items[][SOUVENIR_ITEM_LEN], char notes[][SOUVENIR_NOTE_LEN], uint8_t& count, uint8_t maxCount) {
     count = 0;
-    if (!sdReady || !SD.exists(SOUVENIRS_FILE)) return false;
+    if (!sdReady || !PET_FS.exists(SOUVENIRS_FILE)) return false;
 
-    File file = SD.open(SOUVENIRS_FILE, FILE_READ);
+    File file = PET_FS.open(SOUVENIRS_FILE, FILE_READ);
     if (!file) return false;
     bool sanitized = false;
 
@@ -137,10 +208,10 @@ bool PetStorage::saveSouvenirs(const char items[][SOUVENIR_ITEM_LEN], const char
     if (!sdReady) return false;
 
     ensureDir();
-    if (SD.exists(SOUVENIRS_FILE)) {
-        SD.remove(SOUVENIRS_FILE);
+    if (PET_FS.exists(SOUVENIRS_FILE)) {
+        PET_FS.remove(SOUVENIRS_FILE);
     }
-    File file = SD.open(SOUVENIRS_FILE, FILE_WRITE);
+    File file = PET_FS.open(SOUVENIRS_FILE, FILE_WRITE);
     if (!file) return false;
 
     uint8_t cappedCount = count > maxCount ? maxCount : count;
@@ -159,18 +230,9 @@ bool PetStorage::appendEventLog(const char* eventType, const char* detail) {
     if (!sdReady) return false;
 
     ensureDir();
-    File file = SD.open(EVENTS_FILE, FILE_APPEND);
-    if (!file) return false;
-
     String ts = makeTimestamp();
-    file.print(ts);
-    file.print(" | ");
-    file.print(eventType ? eventType : "event");
-    file.print(" | ");
-    file.print(detail ? detail : "");
-    file.print('\n');
-    file.close();
-    return true;
+    String line = ts + " | " + String(eventType ? eventType : "event") + " | " + String(detail ? detail : "");
+    return rewriteTailFile(EVENTS_FILE, line, MAX_EVENT_LOG_LINES);
 }
 
 bool PetStorage::loadPromptMemory(const char* petId, int askedDayStamp[PROMPT_SLOT_COUNT], char replies[PROMPT_SLOT_COUNT][PROMPT_REPLY_LEN]) {
@@ -181,9 +243,9 @@ bool PetStorage::loadPromptMemory(const char* petId, int askedDayStamp[PROMPT_SL
     if (!sdReady) return false;
 
     String path = memoryPathForPet(petId);
-    if (!SD.exists(path)) return false;
+    if (!PET_FS.exists(path)) return false;
 
-    File file = SD.open(path, FILE_READ);
+    File file = PET_FS.open(path, FILE_READ);
     if (!file) return false;
 
     while (file.available()) {
@@ -209,10 +271,10 @@ bool PetStorage::savePromptMemory(const char* petId, const int askedDayStamp[PRO
     ensureDir();
 
     String path = memoryPathForPet(petId);
-    if (SD.exists(path)) {
-        SD.remove(path);
+    if (PET_FS.exists(path)) {
+        PET_FS.remove(path);
     }
-    File file = SD.open(path, FILE_WRITE);
+    File file = PET_FS.open(path, FILE_WRITE);
     if (!file) return false;
 
     for (uint8_t i = 0; i < PROMPT_SLOT_COUNT; i++) {
@@ -233,18 +295,9 @@ bool PetStorage::appendPetMemoryEvent(const char* petId, const char* eventType, 
     ensureDir();
 
     String path = memoryLogPathForPet(petId);
-    File file = SD.open(path, FILE_APPEND);
-    if (!file) return false;
-
     String ts = makeTimestamp();
-    file.print(ts);
-    file.print(" | ");
-    file.print(eventType ? eventType : "memory");
-    file.print(" | ");
-    file.print(detail ? detail : "");
-    file.print('\n');
-    file.close();
-    return true;
+    String line = ts + " | " + String(eventType ? eventType : "memory") + " | " + String(detail ? detail : "");
+    return rewriteTailFile(path, line, MAX_PET_MEMORY_LINES);
 }
 
 bool PetStorage::loadRecentPetMemoryEvents(const char* petId, char lines[][96], uint8_t& count, uint8_t maxCount) {
@@ -252,9 +305,9 @@ bool PetStorage::loadRecentPetMemoryEvents(const char* petId, char lines[][96], 
     if (!sdReady) return false;
 
     String path = memoryLogPathForPet(petId);
-    if (!SD.exists(path)) return false;
+    if (!PET_FS.exists(path)) return false;
 
-    File file = SD.open(path, FILE_READ);
+    File file = PET_FS.open(path, FILE_READ);
     if (!file) return false;
 
     static constexpr uint8_t kMaxBuffer = 12;

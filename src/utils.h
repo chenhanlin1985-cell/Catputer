@@ -2,9 +2,15 @@
 #include <cstdint>
 #include <Arduino.h>
 
-// Screen dimensions (landscape)
-constexpr int SCREEN_W = 240;
-constexpr int SCREEN_H = 135;
+// Screen dimensions (landscape on Cardputer; touch targets may override).
+#ifndef CATPUTER_SCREEN_W
+#define CATPUTER_SCREEN_W 240
+#endif
+#ifndef CATPUTER_SCREEN_H
+#define CATPUTER_SCREEN_H 135
+#endif
+constexpr int SCREEN_W = CATPUTER_SCREEN_W;
+constexpr int SCREEN_H = CATPUTER_SCREEN_H;
 
 // RGB565 color helpers
 constexpr uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {

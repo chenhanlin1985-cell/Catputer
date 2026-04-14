@@ -3,6 +3,12 @@
 #include <WiFiClient.h>
 #include <stdlib.h>
 
+#if defined(CATPUTER_TOUCH_UI)
+#define M5DEVICE M5
+#else
+#define M5DEVICE M5Cardputer
+#endif
+
 void VoiceInput::begin(const String& host, const String& port) {
     sttHostStr = host;
     sttPortStr = port;
@@ -65,23 +71,25 @@ void VoiceInput::freeBuffer() {
 
 void VoiceInput::initMic() {
     // Mic and speaker share GPIO 43, so pause speaker while recording.
-    M5Cardputer.Speaker.end();
+    M5DEVICE.Speaker.end();
 
-    auto micCfg = M5Cardputer.Mic.config();
+    auto micCfg = M5DEVICE.Mic.config();
     micCfg.sample_rate = SAMPLE_RATE;
     micCfg.magnification = 64;
     micCfg.noise_filter_level = 64;
     micCfg.task_priority = 1;
-    M5Cardputer.Mic.config(micCfg);
-    M5Cardputer.Mic.begin();
+    M5DEVICE.Mic.config(micCfg);
+    M5DEVICE.Mic.begin();
 
     Serial.println("[VOICE] Mic started");
 }
 
 void VoiceInput::deinitMic() {
-    M5Cardputer.Mic.end();
-    M5Cardputer.Speaker.begin();
-    M5Cardputer.Speaker.setVolume(Config::getSpeakerVolume());
+    M5DEVICE.Mic.end();
+    M5DEVICE.Speaker.begin();
+    M5DEVICE.Speaker.setVolume(Config::getSpeakerVolume());
+    M5DEVICE.Speaker.setChannelVolume(0, 96);
+    M5DEVICE.Speaker.setChannelVolume(1, 255);
     Serial.println("[VOICE] Mic stopped, speaker restored");
 }
 
@@ -97,7 +105,7 @@ void VoiceInput::startRecording() {
     recordStartTime = millis();
 
     initMic();
-    M5Cardputer.Mic.record(recordBuffer, maxSamples, SAMPLE_RATE);
+    M5DEVICE.Mic.record(recordBuffer, maxSamples, SAMPLE_RATE);
 
     Serial.println("[VOICE] Recording started");
 }
