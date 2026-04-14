@@ -2,156 +2,114 @@
 
 [English](README.md)
 
-`Catputer` 是运行在 `M5Stack Cardputer / Cardputer Adv` 上的小猫口袋宠物项目。当前版本已经从早期实验性聊天终端，整理成了更接近成品的离线宠物设备：
+`Catputer` 是一个围绕 ESP32-S3 触屏端、PC 猫舍和 SD 卡资源构建的随身宠物项目。当前方向已经不再是“一个小聊天终端”，而是让宠物像在自己的小房间里真实生活：会移动、会记得最近的小事、会根据时间和天气说短句，联网时再用 AI 生成更自然的场景化反馈。
 
-- 离线也能玩
-- 联网后更聪明
-- 中文优先
-- 支持语音输入与朗读
-- 支持外出、纪念盒、照片和成长记录
-
-## 主要功能
-
-### 离线宠物
-
-- 喂食
-- 玩乐
-- 小睡
-- 清理
-- 迷你游戏
-- 外出散步
-- 纪念盒查看
-- 本地成长存档
-
-当前核心属性：
-
-- 饱腹
-- 心情
-- 体力
-- 清洁
-- 亲密
-
-### 联网增强
-
-- AI 聊天
-- 语音输入
-- 语音朗读
-- 天气同步
+当前主线端侧是 `Waveshare ESP32-S3 Touch AMOLED 1.8`。早期的 `M5Stack Cardputer / Cardputer Adv` 版本仍保留在仓库中，但已经进入维护归档状态，短期不再作为宠物表现功能的开发主线。
 
 ## 当前结构
 
-现在的连接方式已经比较简单：
+- **Waveshare 触屏端**：当前主端侧，负责宠物房间、触摸交互、天气/时间、SD 资源、SD OTA 和关注回合气泡。
+- **PC 猫舍**：Godot 桌面端，用于管理多只宠物、查看记忆、选择端侧、接回/送出宠物，未来也适合承担 AI 世界事件生成。
+- **Cardputer 端**：保留已有键盘形态实验能力，但短期只维护，不再主动新增宠物表现功能。
 
-1. 设备文字聊天：直接连接兼容 OpenAI 的 HTTPS API
-2. 本地电脑：只负责 `stt_proxy.py`，提供语音识别和 TTS
-3. 不再依赖 `OpenClaw`
+## 有趣的点
 
-也就是说：
+Catputer 想营造的是“宠物不被盯着的时候，也在自己的世界里生活”的感觉：
 
-- 文字聊天不需要本地网关
-- 只有语音输入和朗读需要本地服务
+- 宠物不是静态图标，而是在小房间里活动。
+- 用户隔一段时间再触摸宠物，会触发重逢和最近小事。
+- 天气、时间段、宠物状态、记忆和纪念品可以影响短句。
+- AI 不只是聊天机器人，而是用来生成“宠物刚才做了什么”的小世界事件。
+- 没有网络时仍有本地短句回退，宠物不会直接沉默。
 
-## 快速开始
+## 主要功能
 
-### 1. 配置环境变量
+- Waveshare AMOLED 触屏宠物主页。
+- 宠物基础属性：饱腹、心情、体力、清洁、亲密。
+- 多套宠物形象资源，包括猫和企鹅。
+- SD 卡资源：对话、背景、照片、输入法资源、OTA 固件。
+- 根据时间切换房间背景，天气和时间支持缓存显示。
+- 关注回合：重逢短句 + 最近小事/记忆上下文。
+- 联网可用时，触摸宠物会请求 AI 生成 2 到 3 句场景化气泡。
+- PC 猫舍支持多宠物管理和端侧迁移。
+- SD OTA：把固件放进 SD 卡后，可以从端侧设置页触发刷机。
 
-至少需要这些：
+## 配置
 
-- `WIFI_SSID`
-- `WIFI_PASS`
-- `API_KEY`
-
-常见默认值：
-
-- `API_HOST=dashscope.aliyuncs.com`
-- `API_PORT=443`
-- `DEFAULT_CITY=Shenzhen`
-
-示例配置文件：
+不要提交真实 Wi-Fi、API Key 或个人 token。使用示例文件创建本地配置：
 
 - `.env.example`
 - `clawputer.local.ps1.example`
 
-### 2. 编译和刷机
+常见配置项：
 
-```bash
-pio run -t upload
-```
+- `WIFI_SSID`
+- `WIFI_PASS`
+- `API_KEY`
+- `API_HOST`
+- `API_PORT`
+- `DEFAULT_CITY`
 
-Windows 可直接用脚本：
+## 编译
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\windows\flash.ps1 -Port COM5
-```
-
-### 3. 启动本地语音服务
-
-如果只用文字聊天，这一步不是必须。
-如果要语音输入或朗读：
-
-```bash
-python tools/stt_proxy.py
-```
-
-Windows：
+默认开发目标已经切到 Waveshare 触屏端：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\windows\start-stt-proxy.ps1
+powershell -ExecutionPolicy Bypass -File scripts\windows\pio-run.ps1
 ```
 
-## 按键说明
+显式编译触屏端：
 
-### 宠物界面
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\windows\pio-run.ps1 -EnvName waveshare-amoled-18
+```
 
-- `TAB`：进入聊天
-- `, / ; .`：移动
-- `f`：喂食
-- `p`：玩乐
-- `n`：小睡
-- `c`：清理
-- `g`：迷你游戏
-- `o`：外出
-- `v`：纪念盒
-- `h`：帮助面板
-- `i`：状态面板
-- `Fn + , / Fn + .`：调整音量
-- `Fn + R`：重置配置
+如果需要验证旧 Cardputer 端：
 
-### 聊天界面
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\windows\pio-run.ps1 -EnvName m5stack-cardputer
+```
 
-- `TAB`：返回宠物界面
-- `Enter`：发送
-- `Backspace`：删除
-- `Fn`：按住说话
-- `Fn + ; / Fn + /`：滚动聊天记录
-- `Ctrl + Enter`：切换自动朗读
+## Waveshare 串口刷机
 
-## 本地服务
+使用已固定的 COM9 等待流程，不要直接把运行态 `COM8` 当刷写端口：
 
-语音功能仍然需要：
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows\flash-waveshare-com9-wait.ps1 -AcknowledgeChecklist -WaitSeconds 35 -TouchAttempts 3
+```
 
-- `tools/stt_proxy.py`
-- `ffmpeg`
-- `edge-tts`
-- `GROQ_API_KEY`
+排障前先看：
 
-已经不再需要：
+- [Waveshare 刷机必读](docs/flash-must-read.md)
+- [刷机与联网排查 SOP](docs/刷机与联网排查SOP.md)
 
-- `OpenClaw`
+## SD OTA
 
-## SD 卡支持
+生成 OTA 固件包：
 
-如果插入 SD 卡：
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\windows\prepare-sd-ota.ps1
+```
 
-- 纪念盒优先写到 `/pet/souvenirs.txt`
-- 事件日志写到 `/pet/events.log`
-- 外出照片从 `/pet/photos/` 读取
-- 对话资源和输入法词库也可以放在 SD 卡上
+复制到真实 SD 卡：
 
-如果没有 SD 卡，核心存档会退回到 NVS。
+```text
+/firmware/update.bin
+```
+
+然后在触屏端设置页触发 SD 刷机。
+
+## 推荐阅读
+
+- [当前功能、设置与注意事项](docs/current-product-state-and-setup.md)
+- [触屏端优先与 AI 世界感路线](docs/touch-first-ai-world-roadmap.md)
+- [关注回合与情绪价值设计](docs/attention-session-emotional-design.md)
+- [PlatformIO 缓存隔离说明](docs/platformio-cache-isolation.md)
+- [BLE 与触屏排障记录](docs/ble-keyboard-troubleshooting.md)
 
 ## 仓库说明
 
-- 不要提交真实的 Wi-Fi、API key 或其他个人配置
-- 请使用示例配置文件作为模板
-- 本地日志、构建缓存和个人辅助文件都应保持忽略
+- 不要提交真实 Wi-Fi、API Key 或其他个人配置。
+- 不要提交生成固件、日志和本地临时文件。
+- 每次新增功能都应该同步更新对应文档。
+- Waveshare 本地 TTS 暂时不要恢复，除非先完成分区和内存隔离方案。

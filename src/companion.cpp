@@ -462,6 +462,47 @@ void Companion::noteUserAttention() {
     if (returning) maybeShareReturnSummary();
 }
 
+bool Companion::buildAttentionSessionText(char* out, size_t outSize) {
+    if (!out || outSize == 0) return false;
+    out[0] = '\0';
+
+    unsigned long now = millis();
+    bool returning = lastAttentionAt != 0 && (now - lastAttentionAt) >= ATTENTION_RETURN_MS;
+    lastAttentionAt = now;
+    if (!returning) return false;
+    if (activePromptSlot != PromptSlot::NONE || promptTextEntryActive || townSyncActive || outingActive || focusModeActive) {
+        return false;
+    }
+
+    String text = personalityAmbient("return");
+    if (storyBeatCount > 0 && storyBeats[0][0]) {
+        text += "\n";
+        text += storyBeats[0];
+    } else {
+        const char* ambient = recentMemoryAmbient("idle");
+        if (ambient && ambient[0]) {
+            text += "\n";
+            text += ambient;
+        } else {
+            text += "\n";
+            text += u8"\u6211\u521a\u624d\u5728\u623f\u95f4\u91cc\u6162\u6162\u5f85\u7740";
+        }
+    }
+
+    const char* follow = recentMemoryAmbient("talk");
+    if (follow && follow[0] && text.indexOf(follow) < 0) {
+        text += "\n";
+        text += follow;
+    }
+
+    text.toCharArray(out, outSize);
+    storyBeatCount = 0;
+    for (uint8_t i = 0; i < MAX_STORY_BEATS; i++) {
+        storyBeats[i][0] = '\0';
+    }
+    return true;
+}
+
 void Companion::savePetProgress(bool force) {
     if (!petProgressLoaded || !petProgressDirty) return;
     if (!force && !petSaveTimer.tick()) return;
@@ -622,6 +663,12 @@ const char* Companion::personalityAmbient(const char* category) const {
         if (isCalm) return u8"想和你待一会儿";
         if (isAloof) return u8"我不是想你, 只是有点安静";
         return u8"来陪我玩嘛";
+    }
+    if (strcmp(category, "return") == 0) {
+        if (isClingy) return u8"你回来啦, 我刚好想靠近一点";
+        if (isCalm) return u8"你回来啦, 我刚才安静待着";
+        if (isAloof) return u8"你回来啦, 我也只是刚好在这";
+        return u8"你回来啦, 我正想告诉你一件小事";
     }
     return u8"喵";
 }

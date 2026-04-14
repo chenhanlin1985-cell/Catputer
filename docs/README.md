@@ -24,6 +24,8 @@
   多端 Profile、未来手表端适配边界与实施顺序
 - `attention-session-emotional-design.md`
   触屏端关注回合、陪伴感与情绪价值设计
+- `touch-first-ai-world-roadmap.md`
+  触屏端优先、AI 小世界事件与 Cardputer 维护归档路线
 - `platformio-cache-isolation.md`
   Cardputer 与 Waveshare 多端构建的 PlatformIO 缓存隔离说明
 - `ble-keyboard-troubleshooting.md`

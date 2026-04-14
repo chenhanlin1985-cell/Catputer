@@ -97,6 +97,7 @@ public:
     void dismissActivePrompt();
     void triggerMoodPromptTest();
     void noteUserAttention();
+    bool buildAttentionSessionText(char* out, size_t outSize);
     void setTownSyncActive(bool active);
     void applySyncSnapshot(uint8_t newFullness, uint8_t newMood, uint8_t newEnergy,
                            uint8_t newCleanliness, uint8_t newBond, int newX, int newY,

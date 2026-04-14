@@ -1,13 +1,11 @@
 #include "pet_dialogue.h"
 
-#include <SD.h>
-
 #include "pet_storage.h"
 
 namespace {
     static constexpr const char* DIALOGUE_PATH = "/pet/dialogue/dialogue.txt";
     static constexpr const char* PROMPT_DIALOGUE_PATH = "/pet/dialogue/prompts.txt";
-    static constexpr int MAX_DIALOGUE_ENTRIES = 64;
+    static constexpr int MAX_DIALOGUE_ENTRIES = 96;
 
     struct DialogueEntry {
         String key;
@@ -33,8 +31,8 @@ namespace {
         const char* paths[] = {DIALOGUE_PATH, PROMPT_DIALOGUE_PATH};
         bool loadedAny = false;
         for (const char* path : paths) {
-            if (!SD.exists(path)) continue;
-            File file = SD.open(path, FILE_READ);
+            if (!PetStorage::fs().exists(path)) continue;
+            File file = PetStorage::fs().open(path, FILE_READ);
             if (!file) continue;
 
             while (file.available() && gEntryCount < MAX_DIALOGUE_ENTRIES) {

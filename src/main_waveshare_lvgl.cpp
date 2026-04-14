@@ -301,7 +301,7 @@ static bool applyTownSyncSnapshotJson(const String& snapshotJson);
 static bool isWeatherWifiTransitioning();
 static void setTtsStatus(const char *text, unsigned long durationMs = 6000);
 static void setActionMessage(const char *text);
-static bool triggerTouchCompanionAi();
+static bool triggerTouchCompanionAi(const char *attentionContext = nullptr);
 static void serviceTouchCompanionAi();
 static const char *weatherName(WeatherType type);
 static const char *primaryStatusText();
@@ -547,7 +547,7 @@ static void ensureTouchAiConfigured() {
     touchAiNeedsReconfigure = false;
 }
 
-static bool triggerTouchCompanionAi() {
+static bool triggerTouchCompanionAi(const char *attentionContext) {
     unsigned long now = millis();
     if (touchAiInFlight) return false;
     if (static_cast<long>(now - touchAiCooldownUntilMs) < 0) return false;
@@ -568,6 +568,11 @@ static bool triggerTouchCompanionAi() {
     }
 
     touchAiClient.clearHistory();
+    String contextLine;
+    if (attentionContext && attentionContext[0]) {
+        contextLine = String("本次关注回合：") + attentionContext + "。请自然接住这段上下文，别重复照抄。\n";
+    }
+
     touchAiRequestPrompt =
         String("你是温柔、有礼貌、会关心主人的口袋宠物。") +
         "我刚刚摸了摸你。请用简体中文回复2到3句短句，"
@@ -576,6 +581,7 @@ static bool triggerTouchCompanionAi() {
         "内容要求：至少1句是“新鲜事”，可从天气变化、时间段氛围、生活小知识里选，"
         "要求轻松、有趣、可读性高。"
         "禁止：反问攻击、消极嘲讽、脏话、代码梗。"
+        + contextLine +
         "当前状态：" + String(primaryStatusText()) +
         "，天气：" + String(weatherName(companion.getWeatherType())) +
         "，时间段：" + String(homeBackgroundPeriodLabel(currentHomeBackgroundKey())) + "。";
@@ -2952,21 +2958,36 @@ static void onAction(lv_event_t *e) {
             setActionMessage(showingDetails ? "已展开状态面板" : "已收起状态面板");
             break;
         case HomeAction::Happy:
-        case HomeAction::PetTap:
+        case HomeAction::PetTap: {
             companion.triggerHappy();
-            companion.noteUserAttention();
+            char attentionText[220];
+            bool attentionSession = companion.buildAttentionSessionText(attentionText, sizeof(attentionText));
+            if (!attentionSession) {
+                companion.noteUserAttention();
+            }
             // Touch interactions use text bubbles; avoid local TTS synth path
             // here because it can reboot on this hardware profile.
             discardPendingSpeech();
-            if (triggerTouchCompanionAi()) {
-                setActionMessage("让我想两句悄悄话");
+            if (triggerTouchCompanionAi(attentionSession ? attentionText : nullptr)) {
+                if (attentionSession) {
+                    setActionMessage(attentionText);
+                    actionMessageUntilMs = millis() + 5200;
+                } else {
+                    setActionMessage("让我想两句悄悄话");
+                }
             } else {
-                String fallback = fallbackTouchBubble();
-                setActionMessage(fallback.c_str());
-                companion.speak(fallback.c_str());
-                actionMessageUntilMs = millis() + 3600;
+                if (attentionSession) {
+                    setActionMessage(attentionText);
+                    actionMessageUntilMs = millis() + 5200;
+                } else {
+                    String fallback = fallbackTouchBubble();
+                    setActionMessage(fallback.c_str());
+                    companion.speak(fallback.c_str());
+                    actionMessageUntilMs = millis() + 3600;
+                }
             }
             break;
+        }
         case HomeAction::TogglePage:
             showingMorePage = !showingMorePage;
             setActionMessage(showingMorePage ? "切到更多动作" : "切到主页动作");

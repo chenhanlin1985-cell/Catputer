@@ -1,5 +1,5 @@
 param(
-    [string]$EnvName = "m5stack-cardputer",
+    [string]$EnvName = "waveshare-amoled-18",
     [string]$Target = "",
     [string]$UploadPort = "",
     [switch]$PkgList
